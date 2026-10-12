@@ -1,0 +1,11 @@
+/vendor/
+/.phpunit.cache/
+/test-reports/
+/reports/
+/.agents/
+/.claude/
+AGENTS.md
+CLAUDE.md
+*.zip
+/dist/
+__pycache__/

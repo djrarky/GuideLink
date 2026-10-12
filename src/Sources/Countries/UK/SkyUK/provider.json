@@ -1,0 +1,8 @@
+{
+    "provider": "sky",
+    "label": "Sky UK",
+    "sources": [
+        "viewersvault",
+        "tvchannellists"
+    ]
+}

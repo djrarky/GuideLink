@@ -1,0 +1,250 @@
+{
+    "id": "sky-uk",
+    "name": "Sky UK channel aliases",
+    "revision": 1,
+    "country": "uk",
+    "entries": [
+        {
+            "target_stream_id": "705.uk",
+            "target_name": "Star Plus",
+            "aliases": [
+                "Utsav Plus"
+            ]
+        },
+        {
+            "target_stream_id": "715.uk",
+            "target_name": "Star Gold",
+            "aliases": [
+                "Utsav Gold"
+            ]
+        },
+        {
+            "target_stream_id": "704.uk",
+            "target_name": "Star Bharat",
+            "aliases": [
+                "Utsav Bharat"
+            ]
+        },
+        {
+            "target_stream_id": "748.uk",
+            "target_name": "ARY Digital",
+            "aliases": [
+                "ARY Family"
+            ]
+        },
+        {
+            "target_stream_id": "768.uk",
+            "target_name": "Panjab Broadcasting Channel",
+            "aliases": [
+                "PBC Punjabi"
+            ],
+            "guide_names": [
+                "PBC"
+            ]
+        },
+        {
+            "target_stream_id": "145.uk",
+            "target_name": "Sky Sci-Fi",
+            "aliases": [
+                "SYFY"
+            ]
+        },
+        {
+            "target_stream_id": "151.uk",
+            "target_name": "Sky Mix",
+            "aliases": [
+                "Pick TV"
+            ]
+        },
+        {
+            "target_stream_id": "123.uk",
+            "target_name": "Sky History",
+            "aliases": [
+                "History"
+            ]
+        },
+        {
+            "target_stream_id": "318.uk",
+            "target_name": "GREAT! Action",
+            "aliases": [
+                "Great Movies Action",
+                "Sony Movies Action",
+                "Sony Action",
+                "Movies4Men"
+            ]
+        },
+        {
+            "target_stream_id": "319.uk",
+            "target_name": "GREAT! Action +1",
+            "aliases": [
+                "Great Movies Action +1",
+                "Sony Movies Action +1",
+                "Sony Action +1",
+                "Movies4Men +1"
+            ]
+        },
+        {
+            "target_stream_id": "320.uk",
+            "target_name": "GREAT! Mystery",
+            "aliases": [
+                "Great Movies"
+            ]
+        },
+        {
+            "target_stream_id": "321.uk",
+            "target_name": "GREAT! Mystery +1",
+            "aliases": [
+                "Great Movies +1"
+            ],
+            "guide_names": [
+                "G! Mystery+1"
+            ]
+        },
+        {
+            "target_stream_id": "322.uk",
+            "target_name": "Great! Christmas",
+            "aliases": [
+                "Great Classic",
+                "Great Movies Classic",
+                "Sony Movies Classic",
+                "True Movies"
+            ]
+        },
+        {
+            "target_stream_id": "323.uk",
+            "target_name": "Great! Christmas +1",
+            "aliases": [
+                "Great Classic +1",
+                "Great Movies Classic +1",
+                "Sony Movies Classic +1",
+                "True Movies +1"
+            ],
+            "guide_names": [
+                "Great! Xmas+1"
+            ]
+        },
+        {
+            "target_stream_id": "302.uk",
+            "target_name": "Sky Cinema Animation",
+            "aliases": [
+                "Sky Cinema Select"
+            ],
+            "guide_names": [
+                "SkyAnimationHD"
+            ]
+        },
+        {
+            "target_stream_id": "303.uk",
+            "target_name": "Sky Cinema Halloween",
+            "aliases": [
+                "Sky Cinema Hits"
+            ],
+            "guide_names": [
+                "Halloween HD"
+            ]
+        },
+        {
+            "target_stream_id": "132.uk",
+            "target_name": "U&W",
+            "aliases": [
+                "Watch"
+            ]
+        },
+        {
+            "target_stream_id": "232.uk",
+            "target_name": "U&W +1",
+            "aliases": [
+                "Watch +1"
+            ]
+        },
+        {
+            "target_stream_id": "604.uk",
+            "target_name": "Nickelodeon",
+            "aliases": [
+                "Nick"
+            ]
+        },
+        {
+            "target_stream_id": "615.uk",
+            "target_name": "Nickelodeon +1",
+            "aliases": [
+                "Nick +1"
+            ]
+        },
+        {
+            "target_stream_id": "357.uk",
+            "target_name": "Now 90s & 00s",
+            "aliases": [
+                "Now 90s"
+            ]
+        },
+        {
+            "target_stream_id": "106.uk",
+            "target_name": "Sky One",
+            "aliases": [
+                "Sky Max",
+                "Sky Showcase"
+            ]
+        },
+        {
+            "target_stream_id": "146.uk",
+            "target_name": "True Crime",
+            "aliases": [
+                "CBS Reality"
+            ]
+        },
+        {
+            "target_stream_id": "246.uk",
+            "target_name": "True Crime +1",
+            "aliases": [
+                "CBS Reality +1"
+            ]
+        },
+        {
+            "target_stream_id": "147.uk",
+            "target_name": "True Crime Xtra",
+            "aliases": [
+                "CBS Drama",
+                "Reality Xtra"
+            ],
+            "guide_names": [
+                "TRUE CRIME X"
+            ]
+        },
+        {
+            "target_stream_id": "316.uk",
+            "target_name": "Legend Xtra",
+            "aliases": [
+                "Horror Xtra"
+            ]
+        },
+        {
+            "target_stream_id": "317.uk",
+            "target_name": "Legend Xtra +1",
+            "aliases": [
+                "Horror Xtra +1"
+            ]
+        },
+        {
+            "target_stream_id": "665.uk",
+            "target_name": "Gemporia",
+            "aliases": [
+                "Gems TV"
+            ]
+        },
+        {
+            "target_stream_id": "157.uk",
+            "target_name": "GREAT! tv",
+            "aliases": [
+                "Sony Channel"
+            ]
+        },
+        {
+            "target_stream_id": "257.uk",
+            "target_name": "GREAT! tv +1",
+            "aliases": [
+                "Sony Channel +1"
+            ]
+        }
+    ]
+}
