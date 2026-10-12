@@ -1,0 +1,49 @@
+{
+    "number_words": {
+        "ZERO": "0",
+        "ONE": "1",
+        "TWO": "2",
+        "THREE": "3",
+        "FOUR": "4",
+        "FIVE": "5",
+        "SIX": "6",
+        "SEVEN": "7",
+        "EIGHT": "8",
+        "NINE": "9",
+        "TEN": "10"
+    },
+    "separator_words": [
+        "AND"
+    ],
+    "channel_labels": [
+        "CHANNEL",
+        "CHANNELS",
+        "TELEVISION",
+        "TV"
+    ],
+    "presentation_suffixes": [
+        "LIVE"
+    ],
+    "plural_suffixes": [
+        "S"
+    ],
+    "canonical_subs": [
+        {
+            "pattern": "\\bJR\\b",
+            "replace": "JUNIOR"
+        },
+        {
+            "pattern": "^(ALIBI|DAVE|DRAMA|EDEN|GOLD|YESTERDAY)\\b",
+            "replace": "U AND \\1"
+        },
+        {
+            "pattern": "^VIAPLAY(?: SPORTS?)? (?=\\d+$)",
+            "replace": "PREMIER SPORTS "
+        }
+    ],
+    "noise_tokens": [
+        "UK",
+        "IE",
+        "FPS"
+    ]
+}

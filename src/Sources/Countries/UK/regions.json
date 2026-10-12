@@ -1,0 +1,98 @@
+{
+    "regional_alternate_categories": ["Regional"],
+    "region_directions": ["NORTH", "SOUTH", "EAST", "WEST"],
+    "region_groups": {
+        "UK": [
+            "Eng",
+            "Scot",
+            "ScotSTV",
+            "ScotITVB",
+            "NI",
+            "Wales",
+            "CI"
+        ]
+    },
+    "region_abbrevs": {
+        "EUROPE": [
+            "EU"
+        ],
+        "SCOTLAND": [
+            "SCOT"
+        ],
+        "YORKSHIRE": [
+            "YORKS"
+        ],
+        "NORTH_WEST": [
+            "GRANADA",
+            "NW"
+        ],
+        "NORTH_EAST_CUMBRIA": [
+            "NE CUMBRIA",
+            "NORTH EAST & CAM"
+        ],
+        "WEST_MIDLANDS": [
+            "WEST MIDS",
+            "W MIDS"
+        ],
+        "EAST": [
+            "CAMBRIDGE",
+            "EAST W"
+        ],
+        "SOUTH": [
+            "OXFORD"
+        ],
+        "EAST_MIDLANDS": [
+            "EAST MIDS",
+            "E MIDS"
+        ],
+        "SOUTH_WEST": [
+            "WESTCOUNTRY",
+            "SW"
+        ],
+        "SOUTH_EAST": [
+            "SE"
+        ],
+        "YORKSHIRE_LINCOLNSHIRE": [
+            "YORKS LINCS",
+            "E YORKS LINCS",
+            "E YORKSHIRE AND LINCS",
+            "YK LI",
+            "EAST YORKSHIRE & LINCOLNSHIRE"
+        ],
+        "CHANNEL_ISLANDS": [
+            "CI",
+            "CHANNEL ISLAND"
+        ],
+        "NORTHERN_IRELAND": [
+            "NI"
+        ],
+        "BORDER_SCOTLAND": [
+            "BORDER"
+        ]
+    },
+    "country_tokens": [
+        "eng",
+        "scot",
+        "scotstv",
+        "scotitvb",
+        "ni",
+        "wales",
+        "ci",
+        "londonarea",
+        "london"
+    ],
+    "excl_suffix_cleanup": [
+        {
+            "pattern": "[()]",
+            "replace": ""
+        },
+        {
+            "pattern": "(Scot)(stv|itvb)",
+            "replace": "\\1"
+        },
+        {
+            "pattern": "(London)(area)",
+            "replace": "\\1"
+        }
+    ]
+}

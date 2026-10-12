@@ -1,0 +1,1793 @@
+{
+  "id": "guidelink",
+  "name": "GuideLink",
+  "version": "0.1.0",
+  "api_version": "1.0.0",
+  "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
+  "entrypoint": "Plugin.php",
+  "class": "AppLocalPlugins\\GuideLink\\Plugin",
+  "capabilities": [
+    "channel_processor",
+    "scheduled"
+  ],
+  "hooks": [
+    "playlist.synced"
+  ],
+  "permissions": [
+    "db_read",
+    "db_write",
+    "schema_manage",
+    "filesystem_read",
+    "filesystem_write",
+    "network_egress",
+    "queue_jobs",
+    "hook_subscriptions",
+    "scheduled_runs"
+  ],
+  "schema": {
+    "tables": [
+      {
+        "name": "plugin_guidelink_profiles",
+        "columns": [
+          {
+            "type": "id",
+            "name": "id"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_id",
+            "references": "extension_plugins",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "string",
+            "name": "name"
+          },
+          {
+            "type": "boolean",
+            "name": "enabled",
+            "default": true
+          },
+          {
+            "type": "json",
+            "name": "settings",
+            "nullable": true
+          },
+          {
+            "type": "timestamps"
+          }
+        ],
+        "indexes": [
+          {
+            "type": "unique",
+            "columns": [
+              "extension_plugin_id",
+              "name"
+            ],
+            "name": "gl_profiles_plugin_name_unique"
+          }
+        ]
+      },
+      {
+        "name": "plugin_guidelink_links",
+        "columns": [
+          {
+            "type": "id",
+            "name": "id"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_id",
+            "references": "extension_plugins",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "foreignId",
+            "name": "playlist_id",
+            "references": "playlists",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_profile_id",
+            "references": "plugin_guidelink_profiles",
+            "on_delete": "null",
+            "nullable": true
+          },
+          {
+            "type": "boolean",
+            "name": "enabled",
+            "default": true
+          },
+          {
+            "type": "json",
+            "name": "settings",
+            "nullable": true
+          },
+          {
+            "type": "timestamps"
+          }
+        ],
+        "indexes": [
+          {
+            "type": "unique",
+            "columns": [
+              "extension_plugin_id",
+              "playlist_id"
+            ],
+            "name": "gl_links_plugin_playlist_unique"
+          },
+          {
+            "type": "index",
+            "columns": [
+              "extension_plugin_profile_id"
+            ],
+            "name": "gl_links_profile_idx"
+          }
+        ]
+      },
+      {
+        "name": "plugin_guidelink_results",
+        "columns": [
+          {
+            "type": "id",
+            "name": "id"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_id",
+            "references": "extension_plugins",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_run_id",
+            "references": "extension_plugin_runs",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "foreignId",
+            "name": "playlist_id",
+            "references": "playlists",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "string",
+            "name": "result_type"
+          },
+          {
+            "type": "string",
+            "name": "decision",
+            "nullable": true
+          },
+          {
+            "type": "foreignId",
+            "name": "channel_id",
+            "references": "channels",
+            "on_delete": "null",
+            "nullable": true
+          },
+          {
+            "type": "string",
+            "name": "channel_number",
+            "nullable": true
+          },
+          {
+            "type": "string",
+            "name": "title",
+            "nullable": true
+          },
+          {
+            "type": "integer",
+            "name": "source_number",
+            "nullable": true
+          },
+          {
+            "type": "string",
+            "name": "source_name",
+            "nullable": true
+          },
+          {
+            "type": "integer",
+            "name": "score",
+            "nullable": true
+          },
+          {
+            "type": "string",
+            "name": "reason",
+            "nullable": true
+          },
+          {
+            "type": "json",
+            "name": "details"
+          },
+          {
+            "type": "timestamps"
+          }
+        ],
+        "indexes": [
+          {
+            "type": "index",
+            "columns": [
+              "extension_plugin_id",
+              "extension_plugin_run_id"
+            ],
+            "name": "gl_results_run_idx"
+          },
+          {
+            "type": "index",
+            "columns": [
+              "playlist_id",
+              "result_type"
+            ],
+            "name": "gl_results_playlist_type_idx"
+          },
+          {
+            "type": "index",
+            "columns": [
+              "channel_id"
+            ],
+            "name": "gl_results_channel_idx"
+          }
+        ]
+      },
+      {
+        "name": "plugin_guidelink_alias_sets",
+        "columns": [
+          {
+            "type": "id",
+            "name": "id"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_id",
+            "references": "extension_plugins",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "string",
+            "name": "name"
+          },
+          {
+            "type": "string",
+            "name": "country",
+            "default": "uk"
+          },
+          {
+            "type": "foreignId",
+            "name": "guide_epg_id",
+            "references": "epgs",
+            "on_delete": "null",
+            "nullable": true
+          },
+          {
+            "type": "boolean",
+            "name": "enabled",
+            "default": true
+          },
+          {
+            "type": "string",
+            "name": "bundle_id",
+            "nullable": true
+          },
+          {
+            "type": "timestamps"
+          }
+        ],
+        "indexes": [
+          {
+            "type": "unique",
+            "columns": [
+              "extension_plugin_id",
+              "name"
+            ],
+            "name": "gl_alias_sets_unique"
+          }
+        ]
+      },
+      {
+        "name": "plugin_guidelink_aliases",
+        "columns": [
+          {
+            "type": "id",
+            "name": "id"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_id",
+            "references": "extension_plugins",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "json",
+            "name": "alias_set_ids"
+          },
+          {
+            "type": "string",
+            "name": "target_stream_id"
+          },
+          {
+            "type": "json",
+            "name": "aliases"
+          },
+          {
+            "type": "boolean",
+            "name": "enabled",
+            "default": true
+          },
+          {
+            "type": "timestamps"
+          }
+        ],
+        "indexes": [
+          {
+            "type": "index",
+            "columns": [
+              "extension_plugin_id"
+            ],
+            "name": "gl_aliases_plugin_idx"
+          }
+        ]
+      }
+    ],
+    "ui_tables": [
+      {
+        "id": "profiles",
+        "label": "Profiles",
+        "model_label": "Profile",
+        "table": "plugin_guidelink_profiles",
+        "description": "Reusable matching/source configuration profiles.",
+        "export_formats": [],
+        "columns": [
+          {
+            "name": "name",
+            "label": "Name",
+            "searchable": true,
+            "sortable": true
+          },
+          {
+            "name": "enabled",
+            "label": "Enabled",
+            "type": "boolean",
+            "editable": true
+          },
+          {
+            "name": "settings.provider_source",
+            "label": "Provider Source",
+            "options_provider": "guidelink_sources",
+            "depends_on": [
+              "settings.country",
+              "settings.provider"
+            ]
+          },
+          {
+            "name": "settings.region",
+            "label": "Region"
+          },
+          {
+            "name": "updated_at",
+            "label": "Updated",
+            "type": "datetime",
+            "sortable": true
+          }
+        ],
+        "fields": [
+          {
+            "id": "name",
+            "label": "Profile Name",
+            "type": "text",
+            "required": true,
+            "helper_text": "Friendly name shown when assigning this profile to playlists."
+          },
+          {
+            "id": "enabled",
+            "label": "Enabled",
+            "type": "boolean",
+            "default": true,
+            "helper_text": "Disabled profiles stay saved but are ignored by setup, reports, sync, and schedules."
+          },
+          {
+            "id": "settings.alias_set_ids",
+            "label": "Alias Sets",
+            "type": "table_select",
+            "table": "plugin_guidelink_alias_sets",
+            "value_column": "id",
+            "label_column": "name",
+            "enabled_only": true,
+            "scope_plugin": true,
+            "multiple": true,
+            "helper_text": "Optional shared channel aliases from Data \u2192 Alias Sets. Sets must use this profile\u2019s country; targets must exist in its guide."
+          },
+          {
+            "type": "section",
+            "label": "Source",
+            "description": "Choose where GuideLink gets canonical channel data and how fresh that source must be.",
+            "fields": [
+              {
+                "id": "settings.guide_epg_id",
+                "label": "Guide EPG",
+                "type": "model_select",
+                "model": "App\\Models\\Epg",
+                "label_attribute": "name",
+                "scope": "owned",
+                "required": true,
+                "helper_text": "Required numbered guide EPG used to validate channel numbers and supply consistent stream IDs for auto-merge."
+              },
+              {
+                "id": "settings.country",
+                "label": "Country",
+                "type": "select",
+                "options_provider": "guidelink_countries",
+                "default": "uk",
+                "helper_text": "Country rules control aliases, exclusions, and provider/source compatibility."
+              },
+              {
+                "id": "settings.provider",
+                "label": "Provider",
+                "type": "select",
+                "options_provider": "guidelink_providers",
+                "depends_on": [
+                  "settings.country"
+                ],
+                "default": "sky",
+                "helper_text": "Registry-backed provider family. Choices update from the selected country."
+              },
+              {
+                "id": "settings.provider_source",
+                "label": "Provider Source",
+                "type": "select",
+                "options_provider": "guidelink_sources",
+                "depends_on": [
+                  "settings.country",
+                  "settings.provider"
+                ],
+                "default": "viewersvault",
+                "helper_text": "Canonical source for the selected provider and country."
+              },
+              {
+                "id": "settings.region",
+                "label": "Region",
+                "type": "text",
+                "default": "1",
+                "helper_text": "Provider region number or exact region name. For Sky, region 7 is Granada."
+              },
+              {
+                "id": "settings.source_mode",
+                "label": "Source Mode",
+                "type": "select",
+                "options": {
+                  "scraper_cache": "Scraper cache",
+                  "native_playlist": "Native playlist"
+                },
+                "default": "scraper_cache",
+                "helper_text": "Use scraper cache for registry-backed sources, or native playlist when another playlist is the source of truth."
+              },
+              {
+                "id": "settings.source_playlist_id",
+                "label": "Source Playlist",
+                "type": "model_select",
+                "model": "App\\Models\\Playlist",
+                "label_attribute": "name",
+                "scope": "owned",
+                "required": false,
+                "helper_text": "Required only when Source Mode is native playlist."
+              },
+              {
+                "id": "settings.scraping_api",
+                "label": "Scraping API",
+                "type": "select",
+                "options_provider": "guidelink_scrapers",
+                "default": "direct_http",
+                "helper_text": "Backend used to fetch source pages. API-backed scrapers help with pages that block direct HTTP."
+              },
+              {
+                "id": "settings.scraping_api_key",
+                "label": "Scraping API Key",
+                "type": "text",
+                "secret": true,
+                "required": false,
+                "helper_text": "Required for scrape.do and OloStep. Enter the API key here; Direct HTTP does not require one."
+              },
+              {
+                "id": "settings.scraping_timeout_seconds",
+                "label": "Scraping Timeout Seconds",
+                "type": "number",
+                "default": 60,
+                "helper_text": "Per-page HTTP timeout. A refresh fetches both region map and channel pages."
+              },
+              {
+                "id": "settings.source_cache_days",
+                "label": "Source Cache Days",
+                "type": "number",
+                "default": 2,
+                "helper_text": "Maximum age for parsed source cache. Use 0 to fetch every time."
+              },
+              {
+                "id": "settings.max_retries",
+                "label": "Max Retries",
+                "type": "number",
+                "default": 3,
+                "helper_text": "Attempts per source page before falling back to the parsed last-good cache."
+              },
+              {
+                "id": "settings.min_channels",
+                "label": "Minimum Source Channels",
+                "type": "number",
+                "default": 100,
+                "helper_text": "Rejects suspiciously small parsed source output before it replaces cache."
+              },
+              {
+                "id": "settings.max_drop_percent",
+                "label": "Maximum Drop Percent",
+                "type": "number",
+                "default": 20,
+                "helper_text": "Refuses to replace last-good cache when parsed channel count drops too far."
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "label": "Scope",
+            "description": "Limit which playlist channels GuideLink evaluates and which groups it may rewrite.",
+            "fields": [
+              {
+                "id": "settings.include_scrubber_logs",
+                "label": "Include Scrubber Logs",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Include scrubber health context in availability and repair reports when available."
+              },
+              {
+                "id": "settings.include_managed_groups",
+                "label": "Include Managed Source Groups",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Allow source categories and managed groups to be included in scope and created during apply."
+              },
+              {
+                "id": "settings.disable_other_groups",
+                "label": "Quarantine Unmanaged Provider Groups After Matching",
+                "type": "boolean",
+                "default": false,
+                "helper_text": "Disables channels remaining in unmanaged provider groups after matching. Keep off unless explicitly desired."
+              },
+              {
+                "id": "settings.include_group_prefixes",
+                "label": "Include Group Prefixes",
+                "type": "tags",
+                "default": [],
+                "helper_text": "Leave empty to consider all groups. Enter prefixes to limit scope; exclusions and preserved groups still apply."
+              },
+              {
+                "id": "settings.exclude_group_regex",
+                "label": "Exclude Group Regex",
+                "type": "tags",
+                "helper_text": "Regex patterns for groups to exclude even when their prefix matches."
+              },
+              {
+                "id": "settings.preserve_groups",
+                "label": "Preserve Groups",
+                "type": "tags",
+                "helper_text": "Exact group names that GuideLink must never move or rewrite."
+              },
+              {
+                "id": "settings.preserve_group_name_regex",
+                "label": "Preserve Group Name Regex",
+                "type": "tags",
+                "helper_text": "Regex patterns for group names GuideLink must never move or rewrite."
+              },
+              {
+                "id": "settings.preserve_channel_title_regex",
+                "label": "Preserve Channel Title Regex",
+                "type": "tags",
+                "helper_text": "Regex patterns for channel titles GuideLink must never rewrite."
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "label": "Native Setup",
+            "description": "Desired m3u-editor auto-merge and scrubber setup for playlists using this profile.",
+            "fields": [
+              {
+                "id": "settings.auto_merge_preferred_playlist_id",
+                "label": "Auto-Merge Preferred Playlist",
+                "type": "model_select",
+                "model": "App\\Models\\Playlist",
+                "label_attribute": "name",
+                "scope": "owned",
+                "required": false,
+                "helper_text": "Preferred source of primary streams when merging playlists. Defaults to this playlist. Catch-up preference and resolution can take priority."
+              },
+              {
+                "id": "settings.auto_merge_failover_playlist_ids",
+                "label": "Backup Playlists",
+                "type": "model_select",
+                "model": "App\\Models\\Playlist",
+                "label_attribute": "name",
+                "scope": "owned",
+                "multiple": true,
+                "default": [],
+                "helper_text": "Choose additional backup playlists in priority order. Leave empty to use only the assigned playlist."
+              },
+              {
+                "id": "settings.auto_merge_deactivate_failover",
+                "label": "Deactivate Failover Channels",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Hidden-failover policy. Auto-merge disables backup channels after master selection, and GuideLink uses the same policy to keep the scrubber from re-exposing them."
+              },
+              {
+                "id": "settings.auto_merge_new_channels_only",
+                "label": "Merge Only New Channels",
+                "type": "boolean",
+                "default": false,
+                "helper_text": "Enable only when native auto-merge should skip rebuilding existing failover topology."
+              },
+              {
+                "id": "settings.auto_merge_force_complete_remerge",
+                "label": "Force Complete Re-Merge",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Rebuild native failover topology fully when applying native setup."
+              },
+              {
+                "id": "settings.auto_merge_merge_key",
+                "label": "Auto-Merge Key",
+                "type": "select",
+                "options": {
+                  "stream_id": "Stream ID",
+                  "tmdb_id": "TMDB ID"
+                },
+                "default": "stream_id",
+                "helper_text": "Native merge key used to identify matching live-channel failovers."
+              },
+              {
+                "id": "settings.auto_merge_check_resolution",
+                "label": "Prioritize By Resolution",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Prefer higher-resolution streams during native primary selection. Uses stream statistics and may probe streams when needed."
+              },
+              {
+                "id": "settings.auto_merge_prefer_catchup_as_primary",
+                "label": "Prefer Catch-up As Primary",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Prefer eligible catch-up streams first, then apply resolution and playlist preferences."
+              },
+              {
+                "id": "settings.auto_merge_exclude_disabled_groups",
+                "label": "Exclude Disabled Groups From Master Selection",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Avoid selecting master channels from disabled groups."
+              },
+              {
+                "id": "settings.scrubber_recurring",
+                "label": "Run Scrubber After Playlist Sync",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Let the native scrubber refresh health state after playlist sync."
+              },
+              {
+                "id": "settings.auto_merge_scrubber_aware_master_selection",
+                "label": "Scrubber-aware Primary Selection",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Exclude channels confirmed dead by the scrubber when choosing the primary channel."
+              },
+              {
+                "id": "settings.scrubber_id",
+                "label": "Existing User-managed Scrubber",
+                "type": "model_select",
+                "model": "App\\Models\\ChannelScrubber",
+                "label_attribute": "name",
+                "scope": "owned",
+                "required": false,
+                "helper_text": "Leave blank for GuideLink to create and manage a scrubber. A selected user-managed scrubber is audited without changing it."
+              },
+              {
+                "id": "settings.scrubber_scan_all",
+                "label": "Scan Disabled Channels",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Keeps last_scrubber_live fresh for disabled failover-topology channels so native auto-merge can recover them safely."
+              },
+              {
+                "id": "settings.scrubber_disable_dead",
+                "label": "Disable Dead Channels",
+                "type": "boolean",
+                "default": true
+              },
+              {
+                "id": "settings.scrubber_rebuild_failovers_after_scan",
+                "label": "Rebuild Failovers After Scan",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "After a successful scrubber scan, rerun native auto-merge with fresh health state so promotions and failover recovery stay topology-aware."
+              },
+              {
+                "id": "settings.scrubber_check_method",
+                "label": "Scrubber Probe Method",
+                "type": "select",
+                "options": {
+                  "http": "HTTP",
+                  "ffprobe": "FFprobe"
+                },
+                "default": "http",
+                "helper_text": "Fast HTTP probing is usually enough; use FFprobe only when provider behavior requires it."
+              },
+              {
+                "id": "settings.scrubber_probe_timeout",
+                "label": "Scrubber Probe Timeout Seconds",
+                "type": "number",
+                "default": 10,
+                "helper_text": "Per-stream native scrubber timeout."
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "label": "Matching",
+            "description": "Advanced matcher thresholds. Defaults are conservative and should normally be left alone.",
+            "fields": [
+              {
+                "id": "settings.fuzzy_threshold",
+                "label": "Fuzzy Threshold",
+                "type": "number",
+                "default": 90
+              },
+              {
+                "id": "settings.min_auto_score",
+                "label": "Minimum Auto Score",
+                "type": "number",
+                "default": 90
+              },
+              {
+                "id": "settings.min_auto_margin",
+                "label": "Minimum Auto Margin",
+                "type": "number",
+                "default": 12
+              },
+              {
+                "id": "settings.sort_floor_offset",
+                "label": "Sort Floor Offset",
+                "type": "number",
+                "default": 10
+              },
+              {
+                "id": "settings.min_alias_words",
+                "label": "Minimum Alias Words",
+                "type": "number",
+                "default": 2
+              },
+              {
+                "id": "settings.min_alias_chars",
+                "label": "Minimum Alias Characters",
+                "type": "number",
+                "default": 4
+              },
+              {
+                "id": "settings.min_set_tokens",
+                "label": "Minimum Set Tokens",
+                "type": "number",
+                "default": 2
+              },
+              {
+                "id": "settings.min_ratio_len_ratio",
+                "label": "Minimum Ratio Length Ratio",
+                "type": "number",
+                "default": 0.7
+              },
+              {
+                "id": "settings.min_ratio_score",
+                "label": "Minimum Ratio Score",
+                "type": "number",
+                "default": 90
+              },
+              {
+                "id": "settings.min_partial_len_ratio",
+                "label": "Minimum Partial Length Ratio",
+                "type": "number",
+                "default": 0.65
+              },
+              {
+                "id": "settings.min_partial_len",
+                "label": "Minimum Partial Length",
+                "type": "number",
+                "default": 5
+              },
+              {
+                "id": "settings.min_partial_ratio_score",
+                "label": "Minimum Partial Ratio Score",
+                "type": "number",
+                "default": 80
+              },
+              {
+                "id": "settings.max_short_token_len",
+                "label": "Maximum Short Token Length",
+                "type": "number",
+                "default": 2
+              },
+              {
+                "id": "settings.min_token_similarity",
+                "label": "Minimum Token Similarity",
+                "type": "number",
+                "default": 60
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "playlist_assignments",
+        "label": "Playlists",
+        "model_label": "Assignment",
+        "table": "plugin_guidelink_links",
+        "description": "Assign profiles to playlists.",
+        "export_formats": [],
+        "create": false,
+        "delete_behavior": "clear",
+        "delete_label": "Clear Assignment",
+        "delete_description": "This clears the GuideLink profile and disables this playlist assignment without removing the playlist from the table.",
+        "delete_submit_label": "Clear assignment",
+        "delete_success_message": "Assignment cleared",
+        "delete_payload": {
+          "extension_plugin_profile_id": null,
+          "enabled": false,
+          "settings.run_sync": true,
+          "settings.run_availability": true
+        },
+        "prefill": {
+          "source": {
+            "table": "playlists",
+            "key_column": "id",
+            "user_column": "user_id",
+            "order_column": "name",
+            "scope": "owned"
+          },
+          "target_column": "playlist_id",
+          "defaults": {
+            "enabled": false,
+            "settings.run_sync": true,
+            "settings.run_availability": true
+          }
+        },
+        "columns": [
+          {
+            "name": "playlist_id",
+            "label": "Playlist",
+            "lookup": {
+              "table": "playlists",
+              "label_column": "name",
+              "key_column": "id",
+              "scope_plugin": false
+            }
+          },
+          {
+            "name": "extension_plugin_profile_id",
+            "label": "Profile",
+            "lookup": {
+              "table": "plugin_guidelink_profiles",
+              "label_column": "name",
+              "key_column": "id",
+              "scope_plugin": true,
+              "enabled_only": false
+            }
+          },
+          {
+            "name": "enabled",
+            "label": "Enabled",
+            "type": "boolean",
+            "editable": true
+          },
+          {
+            "name": "settings.run_sync",
+            "label": "Sync",
+            "type": "boolean"
+          },
+          {
+            "name": "settings.run_availability",
+            "label": "Availability",
+            "type": "boolean"
+          },
+          {
+            "name": "updated_at",
+            "label": "Updated",
+            "type": "datetime",
+            "sortable": true
+          }
+        ],
+        "fields": [
+          {
+            "id": "playlist_id",
+            "label": "Playlist",
+            "type": "model_select",
+            "model": "App\\Models\\Playlist",
+            "label_attribute": "name",
+            "scope": "owned",
+            "required": true,
+            "helper_text": "Prefilled from your playlists. This row controls GuideLink behavior for the selected playlist."
+          },
+          {
+            "id": "extension_plugin_profile_id",
+            "label": "Profile",
+            "type": "table_select",
+            "table": "plugin_guidelink_profiles",
+            "value_column": "id",
+            "label_column": "name",
+            "enabled_only": true,
+            "scope_plugin": true,
+            "required": false,
+            "helper_text": "Choose an enabled GuideLink profile. Leave empty to keep the playlist unassigned."
+          },
+          {
+            "id": "enabled",
+            "label": "Enabled",
+            "type": "boolean",
+            "default": false,
+            "helper_text": "Enable this playlist assignment before setup, reports, sync, or schedules will use it."
+          },
+          {
+            "id": "settings.run_sync",
+            "label": "Run Sync",
+            "type": "boolean",
+            "default": true,
+            "helper_text": "Allow scheduled or assigned-playlist sync actions to include this playlist."
+          },
+          {
+            "id": "settings.run_availability",
+            "label": "Run Availability",
+            "type": "boolean",
+            "default": true,
+            "helper_text": "Allow scheduled or assigned-playlist availability checks to include this playlist."
+          }
+        ]
+      },
+      {
+        "id": "run_results",
+        "label": "Results",
+        "model_label": "Result",
+        "table": "plugin_guidelink_results",
+        "description": "Native audit rows from plugin runs.",
+        "export_formats": [
+          "csv",
+          "json"
+        ],
+        "create": false,
+        "edit": false,
+        "delete": false,
+        "columns": [
+          {
+            "name": "created_at",
+            "label": "Created",
+            "type": "datetime",
+            "sortable": true
+          },
+          {
+            "name": "result_type",
+            "label": "Type",
+            "searchable": true,
+            "sortable": true
+          },
+          {
+            "name": "decision",
+            "label": "Decision",
+            "searchable": true,
+            "sortable": true
+          },
+          {
+            "name": "channel_number",
+            "label": "Channel #"
+          },
+          {
+            "name": "title",
+            "label": "Title",
+            "searchable": true
+          },
+          {
+            "name": "source_number",
+            "label": "Source #"
+          },
+          {
+            "name": "source_name",
+            "label": "Source",
+            "searchable": true
+          },
+          {
+            "name": "score",
+            "label": "Score",
+            "sortable": true
+          },
+          {
+            "name": "reason",
+            "label": "Reason",
+            "limit": 120
+          },
+          {
+            "name": "details",
+            "label": "Details",
+            "limit": 160
+          }
+        ]
+      },
+      {
+        "id": "alias_sets",
+        "label": "Alias Sets",
+        "model_label": "Alias Set",
+        "table": "plugin_guidelink_alias_sets",
+        "description": "Choose read-only bundled defaults or create a custom set, then attach it to profiles. Use Preview Alias Set in the Actions menu to inspect its entries. Bundled data is replaced with the plugin ZIP.",
+        "export_formats": [],
+        "columns": [
+          {
+            "name": "name",
+            "label": "Name"
+          },
+          {
+            "name": "bundle_id",
+            "label": "Bundled Dataset"
+          },
+          {
+            "name": "country",
+            "label": "Country"
+          },
+          {
+            "name": "enabled",
+            "label": "Enabled",
+            "type": "boolean"
+          }
+        ],
+        "fields": [
+          {
+            "id": "name",
+            "label": "Name",
+            "type": "text",
+            "required": true
+          },
+          {
+            "id": "bundle_id",
+            "label": "Bundled Defaults",
+            "type": "select",
+            "options_provider": "guidelink_bundled_sets",
+            "placeholder": "None \u2014 custom aliases",
+            "helper_text": "Choose a read-only dataset, or leave empty to manage this set in Aliases. Plugin updates replace bundled data directly. Preview its contents using Preview Alias Set."
+          },
+          {
+            "id": "country",
+            "label": "Country",
+            "type": "select",
+            "options_provider": "guidelink_countries",
+            "default": "uk",
+            "required": true
+          },
+          {
+            "id": "guide_epg_id",
+            "label": "Reference Guide EPG",
+            "type": "model_select",
+            "model": "App\\Models\\Epg",
+            "label_attribute": "name",
+            "scope": "owned",
+            "required": true,
+            "helper_text": "Used to choose channel targets. Profiles can reuse this set with guides containing the same stream IDs and matching channel names."
+          },
+          {
+            "id": "enabled",
+            "label": "Enabled",
+            "type": "boolean",
+            "default": true
+          }
+        ]
+      },
+      {
+        "id": "aliases",
+        "label": "Aliases",
+        "model_label": "Alias",
+        "table": "plugin_guidelink_aliases",
+        "description": "Editable alternative names for custom sets. Read-only bundled defaults are not stored here; use Preview Alias Set to inspect them.",
+        "export_formats": [],
+        "columns": [
+          {
+            "name": "target_stream_id",
+            "label": "Target Stream Id"
+          },
+          {
+            "name": "aliases",
+            "label": "Aliases",
+            "type": "json"
+          },
+          {
+            "name": "enabled",
+            "label": "Enabled",
+            "type": "boolean"
+          }
+        ],
+        "fields": [
+          {
+            "id": "alias_set_ids",
+            "label": "Custom Alias Sets",
+            "type": "select",
+            "required": true,
+            "multiple": true,
+            "helper_text": "Share this entry across compatible custom sets. Bundled defaults are read-only and cannot be edited here.",
+            "options_provider": "guidelink_custom_alias_sets"
+          },
+          {
+            "id": "target_stream_id",
+            "label": "Target Guide Channel",
+            "type": "select",
+            "options_provider": "guidelink_alias_targets",
+            "depends_on": [
+              "alias_set_ids"
+            ],
+            "required": true
+          },
+          {
+            "id": "aliases",
+            "label": "Alternative Channel Names",
+            "type": "tags",
+            "required": true,
+            "helper_text": "One full channel name per tag. Add +1 names separately against their own guide entry."
+          },
+          {
+            "id": "enabled",
+            "label": "Enabled",
+            "type": "boolean",
+            "default": true
+          }
+        ]
+      }
+    ]
+  },
+  "data_ownership": {
+    "tables": [
+      "plugin_guidelink_profiles",
+      "plugin_guidelink_links",
+      "plugin_guidelink_results",
+      "plugin_guidelink_alias_sets",
+      "plugin_guidelink_aliases"
+    ],
+    "directories": [
+      "plugin-data/guidelink"
+    ],
+    "files": [],
+    "default_cleanup_policy": "preserve"
+  },
+  "settings": [
+    {
+      "type": "section",
+      "label": "Scheduling",
+      "fields": [
+        {
+          "id": "schedule_enabled",
+          "label": "Enable Scheduled Availability Report",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "schedule_cron",
+          "label": "Availability Cron",
+          "type": "text",
+          "default": "0 * * * *"
+        },
+        {
+          "id": "sync_schedule_enabled",
+          "label": "Enable Scheduled Sync",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "sync_schedule_mode",
+          "label": "Scheduled Sync Mode",
+          "type": "select",
+          "options": {
+            "preview": "Preview only",
+            "apply": "Apply writes"
+          },
+          "default": "preview"
+        },
+        {
+          "id": "sync_cron",
+          "label": "Sync Cron",
+          "type": "text",
+          "default": "0 3 * * *"
+        },
+        {
+          "id": "source_refresh_schedule_enabled",
+          "label": "Enable Scheduled Source Refresh",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "source_refresh_cron",
+          "label": "Source Refresh Cron",
+          "type": "text",
+          "default": "30 2 * * *"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "health_check",
+      "label": "Plugin Diagnostics",
+      "icon": "heroicon-o-wrench-screwdriver",
+      "hidden": true,
+      "dry_run": true,
+      "fields": []
+    },
+    {
+      "id": "setup_checklist",
+      "label": "Check GuideLink Setup",
+      "icon": "heroicon-o-check-circle",
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [],
+      "hidden": true
+    },
+    {
+      "id": "refresh_source_cache",
+      "label": "Refresh Source Cache",
+      "icon": "heroicon-o-arrow-path",
+      "hidden": true,
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [
+        {
+          "id": "profile_sources",
+          "label": "Refresh Enabled Profiles",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "force_refresh",
+          "label": "Force Refresh",
+          "type": "boolean",
+          "default": false
+        }
+      ]
+    },
+    {
+      "id": "availability_report",
+      "label": "Check Channels",
+      "icon": "heroicon-o-signal",
+      "dry_run": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        }
+      ]
+    },
+    {
+      "id": "sync_playlist",
+      "label": "Preview Sync",
+      "icon": "heroicon-o-magnifying-glass",
+      "dry_run": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false,
+          "helper_text": "Uses the assigned profile to preview native auto-merge, managed scrubber, and channel metadata changes. Does not start a scan."
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        }
+      ]
+    },
+    {
+      "id": "apply_sync_playlist",
+      "label": "Run Sync",
+      "icon": "heroicon-o-cloud-arrow-up",
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false,
+          "helper_text": "Uses the assigned profile to apply native auto-merge, managed scrubber, and channel metadata changes. Does not start a scan."
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        }
+      ]
+    },
+    {
+      "id": "repair_availability",
+      "label": "Repair Channels",
+      "icon": "heroicon-o-lifebuoy",
+      "hidden": true,
+      "dry_run": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        },
+        {
+          "id": "repair_mode",
+          "label": "Repair Mode",
+          "type": "select",
+          "options": {
+            "report_only": "Report only",
+            "reenable_master": "Re-enable disabled primary"
+          },
+          "default": "report_only"
+        }
+      ]
+    },
+    {
+      "id": "apply_repair_availability",
+      "label": "Apply Channel Repair",
+      "icon": "heroicon-o-lifebuoy",
+      "hidden": true,
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        },
+        {
+          "id": "repair_mode",
+          "label": "Repair Mode",
+          "type": "select",
+          "options": {
+            "report_only": "Report only",
+            "reenable_master": "Re-enable disabled primary"
+          },
+          "default": "report_only"
+        }
+      ]
+    },
+    {
+      "id": "audit_auto_merge_setup",
+      "label": "Native Failover Setup",
+      "icon": "heroicon-o-arrows-right-left",
+      "hidden": true,
+      "dry_run": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        },
+        {
+          "id": "auto_merge_preferred_playlist_id",
+          "label": "Preferred Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false,
+          "helper_text": "Preferred source of primary streams when merging playlists. Defaults to this playlist. Catch-up preference and resolution can take priority."
+        },
+        {
+          "id": "auto_merge_failover_playlist_ids",
+          "label": "Failover Playlist IDs",
+          "type": "tags",
+          "helper_text": "Playlist IDs to include as native failover sources, in priority order."
+        },
+        {
+          "id": "auto_merge_deactivate_failover",
+          "label": "Deactivate Failover Channels",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "During native auto-merge, disable backup/failover channels after a master is selected so only the chosen master stays visible."
+        },
+        {
+          "id": "auto_merge_new_channels_only",
+          "label": "Merge Only New Channels",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "auto_merge_force_complete_remerge",
+          "label": "Force Complete Re-Merge",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "auto_merge_merge_key",
+          "label": "Merge Key",
+          "type": "select",
+          "options": {
+            "stream_id": "Stream ID",
+            "tmdb_id": "TMDB ID"
+          },
+          "default": "stream_id"
+        },
+        {
+          "id": "auto_merge_check_resolution",
+          "label": "Prioritize By Resolution",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Prefer higher-resolution streams during native primary selection. Uses stream statistics and may probe streams when needed."
+        },
+        {
+          "id": "auto_merge_prefer_catchup_as_primary",
+          "label": "Prefer Catch-up As Primary",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Prefer eligible catch-up streams first, then apply resolution and playlist preferences."
+        },
+        {
+          "id": "auto_merge_exclude_disabled_groups",
+          "label": "Exclude Disabled Groups From Master Selection",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "auto_merge_scrubber_aware_master_selection",
+          "label": "Scrubber-aware Primary Selection",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Exclude channels confirmed dead by the scrubber when choosing the primary channel."
+        }
+      ]
+    },
+    {
+      "id": "apply_auto_merge_setup",
+      "label": "Apply Native Failover Setup",
+      "icon": "heroicon-o-arrows-right-left",
+      "hidden": true,
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        },
+        {
+          "id": "auto_merge_preferred_playlist_id",
+          "label": "Preferred Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false,
+          "helper_text": "Preferred source of primary streams when merging playlists. Defaults to this playlist. Catch-up preference and resolution can take priority."
+        },
+        {
+          "id": "auto_merge_failover_playlist_ids",
+          "label": "Failover Playlist IDs",
+          "type": "tags",
+          "helper_text": "Playlist IDs to include as native failover sources, in priority order."
+        },
+        {
+          "id": "auto_merge_deactivate_failover",
+          "label": "Deactivate Failover Channels",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "During native auto-merge, disable backup/failover channels after a master is selected so only the chosen master stays visible."
+        },
+        {
+          "id": "auto_merge_new_channels_only",
+          "label": "Merge Only New Channels",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "auto_merge_force_complete_remerge",
+          "label": "Force Complete Re-Merge",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "auto_merge_merge_key",
+          "label": "Merge Key",
+          "type": "select",
+          "options": {
+            "stream_id": "Stream ID",
+            "tmdb_id": "TMDB ID"
+          },
+          "default": "stream_id"
+        },
+        {
+          "id": "auto_merge_check_resolution",
+          "label": "Prioritize By Resolution",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Prefer higher-resolution streams during native primary selection. Uses stream statistics and may probe streams when needed."
+        },
+        {
+          "id": "auto_merge_prefer_catchup_as_primary",
+          "label": "Prefer Catch-up As Primary",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Prefer eligible catch-up streams first, then apply resolution and playlist preferences."
+        },
+        {
+          "id": "auto_merge_exclude_disabled_groups",
+          "label": "Exclude Disabled Groups From Master Selection",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "auto_merge_scrubber_aware_master_selection",
+          "label": "Scrubber-aware Primary Selection",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Exclude channels confirmed dead by the scrubber when choosing the primary channel."
+        }
+      ]
+    },
+    {
+      "id": "rebuild_failovers",
+      "label": "Rebuild Native Failovers",
+      "icon": "heroicon-o-arrow-path-rounded-square",
+      "hidden": true,
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        }
+      ]
+    },
+    {
+      "id": "audit_scrubber_setup",
+      "label": "Scrubber Setup",
+      "icon": "heroicon-o-shield-check",
+      "hidden": true,
+      "dry_run": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        },
+        {
+          "id": "scrubber_id",
+          "label": "Existing Scrubber",
+          "type": "model_select",
+          "model": "App\\Models\\ChannelScrubber",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false,
+          "helper_text": "Optional. Select an existing scrubber to audit as user-managed, or leave blank for GuideLink-managed setup."
+        },
+        {
+          "id": "scrubber_recurring",
+          "label": "Run After Playlist Sync",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "scrubber_scan_all",
+          "label": "Scan Disabled Channels",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Keeps last_scrubber_live fresh for disabled failover-topology channels so native auto-merge can recover them safely."
+        },
+        {
+          "id": "scrubber_disable_dead",
+          "label": "Disable Dead Channels",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "scrubber_rebuild_failovers_after_scan",
+          "label": "Rebuild Failovers After Scan",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "After a successful scrubber scan, rerun native auto-merge with fresh health state so promotions and failover recovery stay topology-aware."
+        },
+        {
+          "id": "scrubber_check_method",
+          "label": "Probe Method",
+          "type": "select",
+          "options": {
+            "http": "HTTP",
+            "ffprobe": "FFprobe"
+          },
+          "default": "http"
+        },
+        {
+          "id": "scrubber_probe_timeout",
+          "label": "Probe Timeout Seconds",
+          "type": "number",
+          "default": 10
+        }
+      ]
+    },
+    {
+      "id": "apply_scrubber_setup",
+      "label": "Apply Scrubber Setup",
+      "icon": "heroicon-o-shield-check",
+      "hidden": true,
+      "dry_run": false,
+      "requires_confirmation": true,
+      "fields": [
+        {
+          "id": "playlist_id",
+          "label": "Playlist",
+          "type": "model_select",
+          "model": "App\\Models\\Playlist",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false
+        },
+        {
+          "id": "assigned_playlists",
+          "label": "Run For Assigned Playlists",
+          "type": "boolean",
+          "default": false,
+          "helper_text": "Run this action for every enabled playlist assignment instead of one selected playlist."
+        },
+        {
+          "id": "scrubber_id",
+          "label": "Existing Scrubber",
+          "type": "model_select",
+          "model": "App\\Models\\ChannelScrubber",
+          "label_attribute": "name",
+          "scope": "owned",
+          "required": false,
+          "helper_text": "Optional. Select an existing scrubber to validate as user-managed, or leave blank for GuideLink-managed setup."
+        },
+        {
+          "id": "scrubber_recurring",
+          "label": "Run After Playlist Sync",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "scrubber_scan_all",
+          "label": "Scan Disabled Channels",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Keeps last_scrubber_live fresh for disabled failover-topology channels so native auto-merge can recover them safely."
+        },
+        {
+          "id": "scrubber_disable_dead",
+          "label": "Disable Dead Channels",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "id": "scrubber_rebuild_failovers_after_scan",
+          "label": "Rebuild Failovers After Scan",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "After a successful scrubber scan, rerun native auto-merge with fresh health state so promotions and failover recovery stay topology-aware."
+        },
+        {
+          "id": "scrubber_check_method",
+          "label": "Probe Method",
+          "type": "select",
+          "options": {
+            "http": "HTTP",
+            "ffprobe": "FFprobe"
+          },
+          "default": "http"
+        },
+        {
+          "id": "scrubber_probe_timeout",
+          "label": "Probe Timeout Seconds",
+          "type": "number",
+          "default": 10
+        }
+      ]
+    },
+    {
+      "id": "preview_alias_set",
+      "label": "Preview Alias Set",
+      "icon": "heroicon-o-eye",
+      "dry_run": true,
+      "requires_confirmation": false,
+      "fields": [
+        {
+          "id": "alias_set_id",
+          "label": "Alias Set",
+          "type": "table_select",
+          "table": "plugin_guidelink_alias_sets",
+          "value_column": "id",
+          "label_column": "name",
+          "scope_plugin": true,
+          "required": true,
+          "helper_text": "View guide targets and alternative names without editing. Bundled sets read the JSON included in the installed plugin."
+        }
+      ]
+    }
+  ]
+}

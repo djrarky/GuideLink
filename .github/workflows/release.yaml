@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/validate.yaml
+    secrets:
+      M3U_EDITOR_TOKEN: ${{ secrets.M3U_EDITOR_TOKEN }}
+
+  release:
+    name: Package and draft release
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Check tag matches plugin version
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          version = json.loads(Path('plugin.json').read_text())['version']
+          if os.environ['RELEASE_TAG'] != f'v{version}':
+              raise SystemExit(f'Release tag must be v{version} to match plugin.json')
+          PY
+
+      - name: Build release assets
+        run: python3 scripts/package-release.py --output "$RUNNER_TEMP/guidelink-release"
+
+      - name: Verify asset checksums
+        working-directory: ${{ runner.temp }}/guidelink-release
+        run: sha256sum -c SHA256SUMS
+
+      - name: Generate release notes from commits
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/release-notes.py --tag "$RELEASE_TAG" \
+            --repository "$RELEASE_REPOSITORY" --output "$RUNNER_TEMP/guidelink-notes.md"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$RUNNER_TEMP/guidelink-release/guidelink.zip" \
+            "$RUNNER_TEMP/guidelink-release/SHA256SUMS" \
+            "$RUNNER_TEMP/guidelink-release/release.json" \
+            --draft --verify-tag --notes-file "$RUNNER_TEMP/guidelink-notes.md" \
+            --title "GuideLink $RELEASE_TAG"

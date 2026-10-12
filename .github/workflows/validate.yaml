@@ -1,0 +1,261 @@
+name: Validate Plugin
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+    secrets:
+      M3U_EDITOR_TOKEN:
+        required: false
+  workflow_dispatch:
+    inputs:
+      m3u_editor_repository:
+        description: m3u-editor repository to test against.
+        required: false
+        default: m3ue/m3u-editor
+      m3u_editor_server_url:
+        description: Git server URL for the m3u-editor checkout.
+        required: false
+        default: https://github.com
+      m3u_editor_ref:
+        description: Host branch, tag, or commit to test against.
+        required: false
+        default: dev
+
+env:
+  PHP_VERSION: '8.4'
+  M3U_EDITOR_REPOSITORY: ${{ github.event.inputs.m3u_editor_repository || vars.M3U_EDITOR_REPOSITORY || 'm3ue/m3u-editor' }}
+  M3U_EDITOR_REF: ${{ github.event.inputs.m3u_editor_ref || vars.M3U_EDITOR_REF || 'dev' }}
+  M3U_EDITOR_SERVER_URL: ${{ github.event.inputs.m3u_editor_server_url || vars.M3U_EDITOR_SERVER_URL || 'https://github.com' }}
+
+concurrency:
+  group: ${{ github.workflow }}-validate-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: CI / Plugin Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure checkout CA
+        env:
+          CHECKOUT_CA_CERT: ${{ vars.CHECKOUT_CA_CERT }}
+        run: |
+          if [ -n "${CHECKOUT_CA_CERT}" ]; then
+            cert_path="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/checkout-ca.pem"
+            printf '%s\n' "${CHECKOUT_CA_CERT}" > "${cert_path}"
+            git config --global http.sslCAInfo "${cert_path}"
+
+            if [ -n "${GITHUB_ENV:-}" ]; then
+              echo "GIT_SSL_CAINFO=${cert_path}" >> "${GITHUB_ENV}"
+            fi
+          fi
+
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+
+      - name: Install PHP
+        run: bash .github/scripts/install-ci-php.sh
+
+      - name: Lint PHP files
+        run: find . -path ./.git -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null
+
+      - name: Validate standalone plugin contract
+        run: php scripts/validate-plugin.php
+
+      - name: Test release packaging
+        run: python3 -m unittest discover -s tests/release -v
+
+      - name: Build release archive
+        run: python3 scripts/package-release.py
+
+  code-quality:
+    name: CI / Plugin Code Quality
+    runs-on: ubuntu-latest
+    needs: contract
+    timeout-minutes: 20
+    steps:
+      - name: Configure checkout CA
+        env:
+          CHECKOUT_CA_CERT: ${{ vars.CHECKOUT_CA_CERT }}
+        run: |
+          if [ -n "${CHECKOUT_CA_CERT}" ]; then
+            cert_path="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/checkout-ca.pem"
+            printf '%s\n' "${CHECKOUT_CA_CERT}" > "${cert_path}"
+            git config --global http.sslCAInfo "${cert_path}"
+
+            if [ -n "${GITHUB_ENV:-}" ]; then
+              echo "GIT_SSL_CAINFO=${cert_path}" >> "${GITHUB_ENV}"
+            fi
+          fi
+
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: guidelink
+
+      - name: Checkout m3u-editor
+        env:
+          M3U_EDITOR_TOKEN: ${{ secrets.M3U_EDITOR_TOKEN }}
+        run: |
+          repo_url="${M3U_EDITOR_SERVER_URL%/}/${M3U_EDITOR_REPOSITORY}.git"
+
+          clone_host() {
+            if [ -n "${M3U_EDITOR_TOKEN}" ]; then
+              auth_header="$(printf 'x-access-token:%s' "${M3U_EDITOR_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.extraheader=AUTHORIZATION: basic ${auth_header}" "$@"
+            else
+              git "$@"
+            fi
+          }
+
+          rm -rf m3u-editor
+          if ! clone_host clone --depth 1 --branch "${M3U_EDITOR_REF}" "${repo_url}" m3u-editor; then
+            rm -rf m3u-editor
+            clone_host clone "${repo_url}" m3u-editor
+            clone_host -C m3u-editor checkout "${M3U_EDITOR_REF}"
+          fi
+
+      - name: Install plugin into host checkout
+        run: |
+          mkdir -p m3u-editor/plugins
+          rm -rf m3u-editor/plugins/guidelink
+          cp -a guidelink m3u-editor/plugins/guidelink
+
+      - name: Install PHP
+        env:
+          PHP_EXTENSIONS: dom, curl, libxml, mbstring, zip, pcntl, pdo, pdo_pgsql, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv, redis
+          INSTALL_COMPOSER: 'true'
+        run: bash guidelink/.github/scripts/install-ci-php.sh
+
+      - name: Install Composer dependencies
+        working-directory: m3u-editor
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Check plugin code style with Pint
+        working-directory: m3u-editor
+        run: |
+          printf '%s\n' '{"preset":"laravel"}' > "$RUNNER_TEMP/guidelink-pint.json"
+          vendor/bin/pint --test --config="$RUNNER_TEMP/guidelink-pint.json" plugins/guidelink
+
+  host-plugin-tests:
+    name: CI / Plugin Host Tests
+    runs-on: ubuntu-latest
+    needs: [contract, code-quality]
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: testing
+          POSTGRES_PASSWORD: testing
+          POSTGRES_DB: m3ue_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      DB_CONNECTION: pg_test
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      TEST_DB_DATABASE: m3ue_test
+      TEST_DB_USERNAME: testing
+      TEST_DB_PASSWORD: testing
+      REDIS_HOST: 127.0.0.1
+      REDIS_SERVER_PORT: 6379
+      PLUGIN_INSTALL_MODE: dev
+      PLUGIN_DEV_DIRECTORIES: ${{ github.workspace }}/m3u-editor/plugins
+      PLUGIN_SCAN_DRIVER: fake
+    steps:
+      - name: Configure checkout CA
+        env:
+          CHECKOUT_CA_CERT: ${{ vars.CHECKOUT_CA_CERT }}
+        run: |
+          if [ -n "${CHECKOUT_CA_CERT}" ]; then
+            cert_path="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/checkout-ca.pem"
+            printf '%s\n' "${CHECKOUT_CA_CERT}" > "${cert_path}"
+            git config --global http.sslCAInfo "${cert_path}"
+
+            if [ -n "${GITHUB_ENV:-}" ]; then
+              echo "GIT_SSL_CAINFO=${cert_path}" >> "${GITHUB_ENV}"
+            fi
+          fi
+
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: guidelink
+
+      - name: Checkout m3u-editor
+        env:
+          M3U_EDITOR_TOKEN: ${{ secrets.M3U_EDITOR_TOKEN }}
+        run: |
+          repo_url="${M3U_EDITOR_SERVER_URL%/}/${M3U_EDITOR_REPOSITORY}.git"
+
+          clone_host() {
+            if [ -n "${M3U_EDITOR_TOKEN}" ]; then
+              auth_header="$(printf 'x-access-token:%s' "${M3U_EDITOR_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.extraheader=AUTHORIZATION: basic ${auth_header}" "$@"
+            else
+              git "$@"
+            fi
+          }
+
+          rm -rf m3u-editor
+          if ! clone_host clone --depth 1 --branch "${M3U_EDITOR_REF}" "${repo_url}" m3u-editor; then
+            rm -rf m3u-editor
+            clone_host clone "${repo_url}" m3u-editor
+            clone_host -C m3u-editor checkout "${M3U_EDITOR_REF}"
+          fi
+
+      - name: Install plugin into host checkout
+        run: |
+          mkdir -p m3u-editor/plugins
+          rm -rf m3u-editor/plugins/guidelink
+          cp -a guidelink m3u-editor/plugins/guidelink
+
+      - name: Install PHP
+        env:
+          PHP_EXTENSIONS: dom, curl, libxml, mbstring, zip, pcntl, pdo, pdo_pgsql, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv, redis
+          INSTALL_COMPOSER: 'true'
+        run: bash guidelink/.github/scripts/install-ci-php.sh
+
+      - name: Install Composer dependencies
+        working-directory: m3u-editor
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Prepare Laravel application
+        working-directory: m3u-editor
+        run: |
+          cp .env.example .env || echo "APP_KEY=" > .env
+          echo "REVERB_APP_SECRET=123" >> .env
+          php artisan key:generate
+          touch database/jobs.sqlite
+          php artisan migrate --force
+
+      - name: Discover and validate GuideLink
+        working-directory: m3u-editor
+        run: |
+          php artisan plugins:discover
+          php artisan plugins:validate guidelink
+
+      - name: Run GuideLink host tests
+        working-directory: m3u-editor
+        run: php artisan test plugins/guidelink/tests

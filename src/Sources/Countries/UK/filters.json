@@ -1,0 +1,14 @@
+{
+    "non_linear_group_regex": [
+        "(^|\\|)\\s*24/7\\b",
+        "\\bREPLAY\\b"
+    ],
+    "non_linear_title_regex": [
+        "\\bSERIES\\s+(\\d+|INFO)\\b",
+        "\\bSERIE\\s+(\\d+|INFO)\\b",
+        "\\bDOCS\\s+(\\d+|INFO)\\b",
+        "\\bPREMIERE\\s+(\\d+|INFO)\\b",
+        "\\bRADIO\\b",
+        "\\bEVENT\\s+\\d"
+    ]
+}
