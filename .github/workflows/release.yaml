@@ -52,12 +52,14 @@ jobs:
         working-directory: ${{ runner.temp }}/guidelink-release
         run: sha256sum -c SHA256SUMS
 
-      - name: Generate release notes from commits
-        env:
-          RELEASE_REPOSITORY: ${{ github.repository }}
+      - name: Load authored release notes
         run: |
-          python3 scripts/release-notes.py --tag "$RELEASE_TAG" \
-            --repository "$RELEASE_REPOSITORY" --output "$RUNNER_TEMP/guidelink-notes.md"
+          notes=".github/release-notes/$RELEASE_TAG.md"
+          if [ ! -s "$notes" ]; then
+            echo "Missing release notes: $notes. Describe changes, upgrade steps and validation before tagging."
+            exit 1
+          fi
+          cp "$notes" "$RUNNER_TEMP/guidelink-notes.md"
 
       - name: Create draft release
         env:

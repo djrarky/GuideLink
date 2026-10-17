@@ -283,6 +283,8 @@ host release remain to be verified before publishing.
 ## Release Checklist
 
 - Update `version` in `plugin.json`.
+- Write `.github/release-notes/v<version>.md` with user-visible changes, upgrade
+  behaviour and validation evidence before tagging.
 - Run `php scripts/validate-plugin.php` or the container equivalent.
 - Run the focused tests for changed areas.
 - Run the full plugin test directory for release candidates.
@@ -308,7 +310,9 @@ The workflows separate everyday pushes from releases:
   workflow, including formatting and the full host plugin tests.
 - After validation succeeds, the release job checks that the tag is exactly `v`
   plus the version in `plugin.json`, packages that tagged commit, verifies
-  checksums, and creates a **draft GitHub release** with the three assets attached.
+  checksums, and creates a **draft GitHub release** with the three assets attached
+  and the authored `.github/release-notes/<tag>.md` as its body. Missing or empty
+  notes fail the release job.
 - Review and publish the draft yourself. An ordinary push never publishes a release.
 
 This follows the tag-to-draft pattern used by
@@ -362,7 +366,7 @@ git push origin v0.1.0
 ```
 
 Follow **Actions → Release**. Once it completes, open **Releases**, edit the draft,
-review the generated notes, and select **Publish release** after completing the checks below. Users download the attached
+review the authored notes, and select **Publish release** after completing the checks below. Users download the attached
 `guidelink.zip`. There is no need to upload a locally built ZIP or manually create
 another release. For the next release, use a new version and matching tag.
 
@@ -370,9 +374,24 @@ If validation fails, no draft is created. For an infrastructure failure, fix the
 repository settings and rerun the failed jobs. For a source fix, commit it and use
 a new version/tag; existing tags keep identifying the code originally tested.
 
-### Commit Messages And Release Notes
+### Release Notes
 
-`scripts/release-notes.py` generates the draft body from Git history. Use clear
+Write `.github/release-notes/v<version>.md` before creating the tag. Explain the
+concrete changes users will notice, settings they need to review, changed defaults,
+upgrade steps, and what was tested. Mention material validation limits. A list of
+commit subjects is useful for reviewing the scope, but is not a release description.
+
+The release workflow reads the notes from the tagged commit. Notes are maintained
+with the release tooling and excluded from the plugin ZIP. To correct the current
+version's existing draft, edit its notes file and push `main`; **Update Draft
+Release Notes** updates and verifies the draft body using GitHub's workflow token.
+It does not publish the release or replace its tag or assets. If the current
+version has no draft, or has already been published, it makes no change. Review
+published-release corrections manually in GitHub.
+
+### Commit Summary Helper
+
+`scripts/release-notes.py` generates a scope-review summary from Git history. Use clear
 commit subjects with these prefixes; an optional scope is supported:
 
 ```text
@@ -400,9 +419,9 @@ a descriptive prefixed PR title, since it becomes the commit subject. A first
 release pushed as one initial commit will have only that commit in its notes;
 expand the draft's feature and compatibility description before publishing.
 
-Release notes live in GitHub Releases. There is no separately maintained changelog.
-The workflow checks out full history and passes the generated Markdown to
-`gh release create --notes-file`; it does not use GitHub's PR-only note generator.
+The helper does not supply the release body. The workflow passes the authored
+Markdown to `gh release create --notes-file`; it does not use commit summaries or
+GitHub's PR-only note generator as the final release notes.
 
 ## Prepare Release Assets
 

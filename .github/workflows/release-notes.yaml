@@ -1,0 +1,79 @@
+name: Update Draft Release Notes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/release-notes/**'
+      - '.github/workflows/release-notes.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: draft-release-notes
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update existing draft body
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the current version's draft
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          version = json.loads(Path('plugin.json').read_text())['version']
+          if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
+              raise SystemExit('Invalid plugin version')
+          tag = f'v{version}'
+          notes = Path('.github/release-notes') / f'{tag}.md'
+          pages = json.loads((Path(os.environ['RUNNER_TEMP']) / 'releases.json').read_text())
+          release = next((r for page in pages for r in page if r['tag_name'] == tag), None)
+          if release is None or not release['draft']:
+              print(f'No existing draft for {tag}; no release changed.')
+          else:
+              body = notes.read_text()
+              if not body.strip():
+                  raise SystemExit('Release notes must not be empty')
+              patch = Path(os.environ['RUNNER_TEMP']) / 'release-notes-patch.json'
+              patch.write_text(json.dumps({'body': body}))
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write(f"release_id={release['id']}\n")
+          PY
+
+      - name: Update and verify draft notes
+        if: steps.draft.outputs.release_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+        run: |
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            --input "$RUNNER_TEMP/release-notes-patch.json" \
+            --jq '{html_url, tag_name, draft}'
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/updated-release.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          expected = json.loads((temp / 'release-notes-patch.json').read_text())['body']
+          actual = json.loads((temp / 'updated-release.json').read_text())
+          if actual['body'] != expected or not actual['draft']:
+              raise SystemExit('Draft release notes verification failed')
+          print('Draft body verified; release assets and tag were not changed.')
+          PY
