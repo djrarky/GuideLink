@@ -168,9 +168,10 @@ cd ../podman
   /var/www/html/plugins/guidelink/tests
 ```
 
-Latest workspace run on 2026-10-17: the full plugin suite passed with 193 tests
-and 1,186 assertions under PHP 8.4, using the m3u-editor reference commit
-`aa550eeae5a0b1f0907907a63abe1c566025a978` and an isolated SQLite test database.
+Latest workspace run on 2026-10-17: the full plugin suite passed with 194 tests
+and 1,193 assertions under PHP 8.4, using the m3u-editor reference commit
+`aa550eeae5a0b1f0907907a63abe1c566025a978` and isolated PostgreSQL 16 and SQLite
+test databases.
 Regression coverage includes native import cleanup and auto-merge, repeated sync,
 legacy group restoration, disabled backups, quarantine (including availability
 repair), native logo fallback, opt-in playlist layout management, native channel
@@ -216,6 +217,9 @@ Further regression coverage includes:
   opt-outs, deletion of a selected scrubber between planning and apply, and
   consistent alert identities for single assigned-playlist and manual runs.
   Empty automatic selections skip quietly instead of raising failure alerts.
+- PostgreSQL decimal sort values do not cause repeated group writes; fractional
+  group orders remain visible to planning and stale-plan checks. Layout tests
+  compare persisted JSON rules without assuming JSONB object-key ordering.
 
 These are deterministic local regressions; concurrent workers on a production
 database have not been load tested. A read-only live audit on 2026-10-17 checked
@@ -226,6 +230,14 @@ playlist, channel or cache data was changed. A separate fresh-fetch check was
 blocked by scrape.do's exhausted monthly quota (HTTP 401); the existing 297-row
 source cache remained readable. Fresh parser behavior is fixture-tested, not
 verified against a successful live fetch during this audit.
+
+A subsequent production update exercised the reviewed install, Horizon restart,
+PHP-FPM reload, native playlist import/merge and automatic hook, sync and repeat
+previews. Managed group IDs/order and quarantine remained stable; the final
+preview proposed zero edits. EPG logo selection and a sample image fetch passed.
+Native alert suppression, recovery and rate-limit fallback were checked with
+delivery/HTTP intercepted and test database changes rolled back. Existing
+profiles and schedules were retained; fresh source fetching was not retried.
 
 Standalone validation, PHP lint (109 files), Pint, and all nine
 packaging/release-note tests passed. The packaged 0.1.0-to-0.1.1 upgrade

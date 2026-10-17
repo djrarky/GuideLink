@@ -144,10 +144,12 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
             ['enabled' => true, 'target' => 'live_groups', 'group' => ['Entertainment'], 'column' => 'title', 'sort' => 'DESC'],
         ];
         $playlist->forceFill(['sort_alpha_config' => $rules])->saveQuietly();
+        // JSONB may reorder object keys when persisting the rules.
+        $storedRules = $playlist->refresh()->sort_alpha_config;
         $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
         $this->assertTrue($result->success, $result->summary);
         $this->assertSame(1, $result->data['native_settings']['playlist_layout']['details']['warnings']);
-        $this->assertSame($rules, $playlist->refresh()->sort_alpha_config);
+        $this->assertSame($storedRules, $playlist->refresh()->sort_alpha_config);
         $warning = DB::table(RunResultRepository::TABLE)->where('result_type', 'playlist_layout_audit')->where('decision', 'warning')->sole();
         $details = json_decode($warning->details, true)['details'];
         $this->assertSame(4, $details['rule_number']);

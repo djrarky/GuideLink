@@ -50,6 +50,30 @@ class GroupPlanningTest extends PluginFeatureTestCase
         $this->assertSame('Personal channels', $group->name);
     }
 
+    public function test_fractional_group_order_is_corrected_and_intervening_changes_are_rejected(): void
+    {
+        [$context, $playlist] = $this->context(dryRun: false);
+        $group = Group::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+            'name' => 'Entertainment', 'sort_order' => 1.5, 'custom' => true,
+        ]);
+        $service = new GroupSyncService(new CountryRulesRepository);
+        $plan = $service->plan([['category' => 'Entertainment']], [], ['entertainment' => $group]);
+        $this->assertSame('update_sort', $plan[0]['action']);
+        $group->forceFill(['sort_order' => 1.75])->saveQuietly();
+        $stale = $service->apply($playlist, $plan, $context);
+        $this->assertSame(1, $stale['groups_failed']);
+        $this->assertSame(1.75, (float) $group->refresh()->sort_order);
+
+        $plan = $service->plan([['category' => 'Entertainment']], [], ['entertainment' => $group]);
+        $first = $service->apply($playlist, $plan, $context);
+        $second = $service->apply($playlist, $plan, $context);
+        $this->assertSame(1, $first['groups_updated']);
+        $this->assertSame(0, $second['groups_updated']);
+        $this->assertSame(0, $second['groups_failed']);
+        $this->assertSame(1.0, (float) $group->refresh()->sort_order);
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

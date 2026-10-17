@@ -34,7 +34,7 @@ class GroupSyncService
         foreach ($this->categoryOrder($sourceEntries) as $category => $sortOrder) {
             $groupKey = GroupIdentity::key($category);
             $group = $groupsByName[$groupKey] ?? null;
-            $currentSort = Options::nullableInt($group?->sort_order);
+            $currentSort = $group?->sort_order;
             $preserved = ! Options::bool($payload, [], 'include_managed_groups', ProfileDefaults::bool('include_managed_groups'))
                 || $scope->preservesGroup($category, $preserveNames, $preservePatterns)
                 || ($group && $scope->preservesGroup((string) $group->name, $preserveNames, $preservePatterns));
@@ -43,7 +43,7 @@ class GroupSyncService
                 ! $group => 'create',
                 $group->trashed() => 'restore',
                 ! $group->custom => 'protect',
-                $currentSort !== $sortOrder => 'update_sort',
+                ! $this->sameSortOrder($currentSort, $sortOrder) => 'update_sort',
                 default => 'exists',
             };
 
@@ -185,14 +185,15 @@ class GroupSyncService
                 return ['group' => $group, 'created' => false, 'updated' => false];
             }
             if ($row['action'] !== 'create' && $group->exists
-                && Options::nullableInt($group->sort_order) !== $row['current_sort_order']
-                && Options::nullableInt($group->sort_order) !== $row['desired_sort_order']) {
+                && ! $this->sameSortOrder($group->sort_order, $row['current_sort_order'])
+                && ! $this->sameSortOrder($group->sort_order, $row['desired_sort_order'])) {
                 throw new \RuntimeException("Managed group [{$group->id}] order changed after planning; rerun sync.");
             }
 
-            $values = [
-                'sort_order' => (int) $row['desired_sort_order'],
-            ];
+            $values = [];
+            if (! $group->exists || ! $this->sameSortOrder($group->sort_order, $row['desired_sort_order'])) {
+                $values['sort_order'] = (int) $row['desired_sort_order'];
+            }
             if (! $group->custom) {
                 $values['custom'] = true;
             }
@@ -219,5 +220,14 @@ class GroupSyncService
 
             return ['group' => $group, 'created' => $created, 'updated' => $updated];
         });
+    }
+
+    private function sameSortOrder(mixed $left, mixed $right): bool
+    {
+        // PostgreSQL returns decimal strings. Compare their numeric value without
+        // truncating fractional orders or dirtying an already-applied group.
+        return is_numeric($left) && is_numeric($right)
+            ? (float) $left === (float) $right
+            : $left === $right;
     }
 }
