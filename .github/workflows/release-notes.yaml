@@ -42,7 +42,16 @@ jobs:
           tag = f'v{version}'
           notes = Path('.github/release-notes') / f'{tag}.md'
           pages = json.loads((Path(os.environ['RUNNER_TEMP']) / 'releases.json').read_text())
-          release = next((r for page in pages for r in page if r['tag_name'] == tag), None)
+          releases = [r for page in pages for r in page]
+          matches = [r for r in releases if r['tag_name'] == tag]
+          # GitHub can expose an edited draft under its temporary untagged name.
+          if not matches:
+              matches = [r for r in releases if r['draft']
+                         and r['tag_name'].startswith('untagged-')
+                         and r['name'] == f'GuideLink {tag}']
+          if len(matches) > 1:
+              raise SystemExit('Ambiguous release selection; no release changed')
+          release = matches[0] if matches else None
           if release is None or not release['draft']:
               print(f'No existing draft for {tag}; no release changed.')
           else:
@@ -50,9 +59,13 @@ jobs:
               if not body.strip():
                   raise SystemExit('Release notes must not be empty')
               patch = Path(os.environ['RUNNER_TEMP']) / 'release-notes-patch.json'
-              patch.write_text(json.dumps({'body': body}))
+              # Include the selected tag explicitly: a body-only update can reset
+              # a draft's tag association to GitHub's temporary untagged name.
+              patch.write_text(json.dumps({'body': body, 'tag_name': tag}))
+              (patch.parent / 'release-before.json').write_text(json.dumps(release))
               with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
                   output.write(f"release_id={release['id']}\n")
+                  output.write(f"tag={tag}\n")
           PY
 
       - name: Update and verify draft notes
@@ -60,7 +73,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          RELEASE_TAG: ${{ steps.draft.outputs.tag }}
         run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             --input "$RUNNER_TEMP/release-notes-patch.json" \
             --jq '{html_url, tag_name, draft}'
@@ -71,9 +86,16 @@ jobs:
           from pathlib import Path
 
           temp = Path(os.environ['RUNNER_TEMP'])
-          expected = json.loads((temp / 'release-notes-patch.json').read_text())['body']
+          expected = json.loads((temp / 'release-notes-patch.json').read_text())
+          before = json.loads((temp / 'release-before.json').read_text())
           actual = json.loads((temp / 'updated-release.json').read_text())
-          if actual['body'] != expected or not actual['draft']:
+          if any(actual[key] != value for key, value in expected.items()) or not actual['draft']:
               raise SystemExit('Draft release notes verification failed')
+          if any(actual[key] != before[key] for key in ('id', 'name', 'target_commitish', 'prerelease')):
+              raise SystemExit('Release metadata changed unexpectedly')
+          def assets(release):
+              return sorted((a['id'], a['name'], a['size'], a.get('digest')) for a in release['assets'])
+          if assets(actual) != assets(before):
+              raise SystemExit('Release assets changed unexpectedly')
           print('Draft body verified; release assets and tag were not changed.')
           PY
