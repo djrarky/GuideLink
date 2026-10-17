@@ -21,6 +21,7 @@ class SetupChecklistService
         private readonly SourceCacheService $sourceCache = new SourceCacheService,
         private readonly AutoMergeSetupService $autoMergeSetup = new AutoMergeSetupService,
         private readonly ScrubberSetupService $scrubberSetup = new ScrubberSetupService,
+        private readonly PlaylistSetupService $playlistSetup = new PlaylistSetupService,
     ) {}
 
     /**
@@ -33,6 +34,8 @@ class SetupChecklistService
             ProfileRepository::PROFILES_TABLE => Schema::hasTable(ProfileRepository::PROFILES_TABLE),
             ProfileRepository::ASSIGNMENTS_TABLE => Schema::hasTable(ProfileRepository::ASSIGNMENTS_TABLE),
             RunResultRepository::TABLE => Schema::hasTable(RunResultRepository::TABLE),
+            ChannelQuarantineService::TABLE => Schema::hasTable(ChannelQuarantineService::TABLE),
+            NativeAlertService::TABLE => Schema::hasTable(NativeAlertService::TABLE),
         ];
         $schemaReady = ! in_array(false, $tables, true);
         $playlistCount = (new PlaylistResolver)->availableTo($context)->count();
@@ -352,6 +355,7 @@ class SetupChecklistService
         ];
 
         return [
+            $this->nativeSetupRow($playlist, $profile, $payload, $context, $this->playlistSetup, 'playlist layout'),
             $this->nativeSetupRow($playlist, $profile, $payload, $context, $this->autoMergeSetup, 'auto-merge'),
             $this->nativeSetupRow($playlist, $profile, $payload, $context, $this->scrubberSetup, 'scrubber'),
         ];
@@ -365,7 +369,7 @@ class SetupChecklistService
         object $profile,
         array $payload,
         PluginExecutionContext $context,
-        AutoMergeSetupService|ScrubberSetupService $service,
+        AutoMergeSetupService|ScrubberSetupService|PlaylistSetupService $service,
         string $kind,
     ): array {
         $title = 'Native '.$kind.' setup: '.(string) $playlist->name;
@@ -384,9 +388,12 @@ class SetupChecklistService
             return $this->row(
                 $status,
                 $title,
-                $status === 'ready'
-                    ? 'Native '.$kind.' settings match the assigned GuideLink profile.'
-                    : 'Run Preview Sync, review the report, then Run Sync with confirmation to restore the assigned GuideLink profile settings.',
+                match (true) {
+                    $service instanceof PlaylistSetupService && ! $desired['managed'] => 'Playlist layout remains user-managed. Enable layout management in the profile to protect guide order and numbers.',
+                    $status === 'ready' => 'Native '.$kind.' settings match the assigned GuideLink profile.',
+                    $service instanceof PlaylistSetupService => 'Run Preview Sync to review layout changes and conflicting automation. Apply the profile settings with Run Sync and adjust any identified rules in m3u-editor.',
+                    default => 'Run Preview Sync, review the report, then Run Sync with confirmation to restore the assigned GuideLink profile settings.',
+                },
                 [
                     ...$details,
                     'summary' => $service->summary($auditRows),

@@ -8,7 +8,9 @@ use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
 use AppLocalPlugins\GuideLink\Services\SourceRefreshService;
 use AppLocalPlugins\GuideLink\Support\Options;
+use AppLocalPlugins\GuideLink\Support\RunCancelled;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
+use AppLocalPlugins\GuideLink\Support\SourceRefreshFailed;
 use AppLocalPlugins\GuideLink\Support\SourceSettings;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -51,7 +53,11 @@ class RefreshSourceCacheAction extends GuideLinkAction
         ], log: true);
 
         return PluginActionResult::success(
-            "Source cache refreshed: {$summary['source']['channel_count']} channel(s).",
+            match (true) {
+                (bool) ($summary['source']['stale_fallback'] ?? false) => "Source refresh failed; using the last-good cache ({$summary['source']['channel_count']} channels).",
+                (bool) ($summary['source']['from_cache'] ?? false) => "Using fresh source cache: {$summary['source']['channel_count']} channel(s).",
+                default => "Source cache refreshed: {$summary['source']['channel_count']} channel(s).",
+            },
             [
                 ...$summary,
                 'totals' => [
@@ -76,6 +82,7 @@ class RefreshSourceCacheAction extends GuideLinkAction
         $profilePayloads = $this->services->profileRepository()->sourceRefreshPayloads($payload, $context);
         if ($profilePayloads === []) {
             return PluginActionResult::success('No enabled scraper-cache profiles require source refresh.', [
+                'skipped' => true,
                 'profiles' => [],
                 'progress' => 100,
             ]);
@@ -83,40 +90,79 @@ class RefreshSourceCacheAction extends GuideLinkAction
 
         $rows = [];
         $resultRows = [];
+        $resultsByConfig = [];
+        $failed = 0;
+        $sourceFailures = 0;
+        $cancelled = false;
         foreach ($profilePayloads as $index => $profilePayload) {
-            if ($context->cancellationRequested()) {
-                return PluginActionResult::cancelled('Source cache refresh cancelled.', [
-                    'profiles' => $rows,
-                    'progress' => RunProgress::batchPercentage($index, count($profilePayloads)),
-                ]);
-            }
-
-            $context->checkpoint(
-                RunProgress::batchPercentage($index, count($profilePayloads)),
-                'Refreshing source cache profile '.($index + 1).' of '.count($profilePayloads).'.',
-                [
+            try {
+                RunProgress::checkCancellation($context);
+                $context->checkpoint(
+                    RunProgress::batchPercentage($index, count($profilePayloads)),
+                    'Refreshing source cache profile '.($index + 1).' of '.count($profilePayloads).'.',
+                    [
+                        'profile_id' => $profilePayload['profile_id'] ?? null,
+                        'profile_name' => $profilePayload['profile_name'] ?? null,
+                    ],
+                    log: true,
+                );
+                RunProgress::checkCancellation($context);
+                // A shared source with identical credentials and validation policy
+                // needs only one refresh, even when force-refresh is requested.
+                $key = hash('sha256', json_encode(SourceSettings::runtimeCache($profilePayload, []), JSON_THROW_ON_ERROR));
+                if (! isset($resultsByConfig[$key])) {
+                    try {
+                        $result = $refresh->refresh($profilePayload, $context);
+                        $resultsByConfig[$key] = ['status' => 'completed', 'summary' => $result['summary']];
+                    } catch (RunCancelled $exception) {
+                        throw $exception;
+                    } catch (\Throwable $exception) {
+                        $resultsByConfig[$key] = [
+                            'status' => 'failed',
+                            'source_failure' => $exception instanceof SourceRefreshFailed,
+                            'summary' => ['source' => ['refresh_error' => $exception->getMessage()]],
+                        ];
+                    }
+                }
+                $outcome = $resultsByConfig[$key];
+                $failed += (int) ($outcome['status'] === 'failed');
+                $sourceFailures += (int) ($outcome['source_failure'] ?? false);
+                $rows[] = [
                     'profile_id' => $profilePayload['profile_id'] ?? null,
                     'profile_name' => $profilePayload['profile_name'] ?? null,
-                ],
-                log: true,
-            );
-
-            $result = $refresh->refresh($profilePayload, $context);
-            $rows[] = [
-                'profile_id' => $profilePayload['profile_id'] ?? null,
-                'profile_name' => $profilePayload['profile_name'] ?? null,
-                'summary' => $result['summary'],
-            ];
-            $resultRows[] = $this->sourceRefreshRow($profilePayload, $result['summary']);
+                    ...$outcome,
+                ];
+                $resultRow = $this->sourceRefreshRow($profilePayload, $outcome['summary']);
+                if ($outcome['status'] === 'failed') {
+                    $resultRow['status'] = 'failed';
+                    $resultRow['recommendation'] = 'Correct the source refresh error and retry this profile.';
+                }
+                $resultRows[] = $resultRow;
+            } catch (RunCancelled) {
+                $cancelled = true;
+                break;
+            }
+        }
+        $cancelled = $cancelled || $context->cancellationRequested();
+        $resultDetails = $this->persistRows($resultRows, $payload, $context, $this->services->runResults());
+        $fallbacks = count(array_filter($rows, fn (array $row): bool => (bool) ($row['summary']['source']['stale_fallback'] ?? false)));
+        $data = [
+            'profiles' => $rows,
+            'stale_fallbacks' => $fallbacks,
+            'failed' => $failed,
+            'source_failure' => $failed > 0 && $sourceFailures === $failed,
+            'run_results' => $resultDetails,
+            'progress' => $cancelled ? RunProgress::batchPercentage(count($rows), count($profilePayloads)) : 100,
+        ];
+        if ($cancelled) {
+            return PluginActionResult::cancelled('Source cache refresh cancelled; completed profile results were saved.', $data);
+        }
+        if ($failed > 0) {
+            return PluginActionResult::failure("Source refresh failed for {$failed} profile(s); all profile results were saved.", $data);
         }
 
-        $resultDetails = $this->persistRows($resultRows, $payload, $context, $this->services->runResults());
-
-        return PluginActionResult::success('Source cache refresh completed for '.count($rows).' profile(s).', [
-            'profiles' => $rows,
-            'run_results' => $resultDetails,
-            'progress' => 100,
-        ]);
+        return PluginActionResult::success('Source cache refresh completed for '.count($rows).' profile(s).'
+            .($fallbacks > 0 ? " {$fallbacks} profile(s) used last-good caches because refresh failed." : ''), $data);
     }
 
     /**

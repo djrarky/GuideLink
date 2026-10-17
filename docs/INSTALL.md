@@ -11,8 +11,8 @@ trusted, and integrity-verified before it can execute.
 For Docker deployments, any local path used below must be visible inside the
 m3u-editor application container.
 
-This first GuideLink release uses the plugin id `guidelink` and is intended for
-a clean install. Create fresh profiles and playlist assignments after installing.
+GuideLink uses the plugin id `guidelink`. Updates preserve existing profiles,
+playlist assignments, and custom aliases; fresh installations need initial setup.
 
 ## Prerequisites
 
@@ -130,6 +130,66 @@ Stage the new directory or archive using the same install flow. If the plugin id
 matches an existing install, approving the install review automatically replaces
 the plugin files; there is no separate **Replace** option. Trust the updated files after review.
 
+Before approval, pause GuideLink's scheduled and playlist-sync triggers and let
+active GuideLink runs finish. After approval/trust, recycle the host's queue
+workers before resuming those triggers or starting another run. m3u-editor's
+Horizon workers retain loaded plugin PHP classes across jobs; installing new
+files does not replace the classes already loaded in a worker.
+
+For the standard supervised m3u-editor container, run inside the application
+container:
+
+```bash
+php artisan horizon:terminate --wait
+php artisan horizon:status
+```
+
+The process supervisor starts a fresh Horizon instance after the old one exits.
+Wait for that restart to complete and confirm Horizon is running before resuming
+GuideLink. This allows active jobs to finish and keeps pending jobs queued. Run
+the command on each host/container running Horizon if there are several. Custom
+deployments must also have a process manager configured to restart Horizon.
+Avoid **Reset Queue** / `app:restart-queue` for this upgrade: that host action also
+clears pending jobs.
+
+Also reload the web PHP workers when OPcache timestamp validation is disabled
+(`opcache.validate_timestamps=0`), otherwise UI requests may keep using old plugin
+code. The standard PHP-FPM container supports a graceful reload with `SIGUSR2`
+sent to its PHP-FPM master process. Verify the master PID in the running container
+before sending the signal; do not reuse a PID from a previous deployment. Custom
+web runtimes should use their own graceful reload procedure. Restarting Horizon
+alone does not clear the web workers' OPcache.
+
+### Upgrading From 0.1.0 To 0.1.1
+
+The reviewed update adds plugin-owned quarantine and alert-state tables. Complete approval and
+trust before running sync; copying PHP files alone does not install the new schema.
+Native alerts default to enabled and reuse the host's configured alert channels.
+Review **Settings → Native Alerts** for the enable switch and reminder interval;
+see [native alert behaviour](CONFIGURATION.md#native-alerts).
+
+1. Edit existing profiles in **Data → Profiles**. The previous quarantine toggle
+   retains its saved value and is now labelled **Disable Excluded and Unmatched
+   Channels**. When enabled, it also covers prefix, regex, heading, and non-linear
+   exclusions, plus unmatched channels already in managed groups. Explicit preserve
+   rules and matches needing review remain untouched.
+2. Choose **Channel Logo Source → EPG Logos** if desired. The default keeps existing
+   logo preferences; custom logo overrides retain priority.
+3. Optionally enable **Let GuideLink Manage Playlist Layout** in the profile to
+   protect guide order and numbers. Choose flat guide number order or grouped
+   order. Existing profiles remain unmanaged until this option is enabled;
+   these native settings affect the entire assigned playlist, including VOD.
+4. Run **Preview Sync** and inspect **Results**, including the proposed layout and
+   quarantine changes. The first apply protects or restores eligible legacy managed groups
+   and repairs matched disabled backups without enabling them.
+5. Run **Run Sync**, then preview again. Unchanged source and channel data should
+   produce no further metadata changes. Managed groups now survive playlist import
+   cleanup without being recreated.
+
+Quarantine also blocks native auto-merge from re-enabling rejected channels.
+Turning the toggle off and running sync restores the recorded merge preference
+for channels not covered by preserve rules; it does not directly enable channels.
+
 The ZIP contains the read-only bundled alias datasets. GuideLink reads those files
 directly, so subsequent matching and previews use the installed defaults without
 an import, database update, scheduler or lifecycle callback. Existing set IDs,
@@ -157,6 +217,16 @@ php artisan plugins:uninstall guidelink --cleanup=preserve
 Use `--cleanup=preserve` unless you intentionally want plugin-owned data purged.
 Preserving keeps profiles, assignments, run results, and plugin-owned cache data
 available for review or reinstall, including alias sets and custom alias entries.
+
+With preserve mode, native groups, channel metadata, and quarantine flags remain
+in place for review or reinstall. To restore recorded merge preferences first,
+turn off **Disable Excluded and Unmatched Channels** and run sync. Preserve rules
+still take priority during sync.
+
+Purge mode restores merge preferences recorded by GuideLink before deleting its
+quarantine records. It does not enable channels or undo channel metadata, groups,
+playlist settings, or scrubber setup. A channel whose merge preference was already
+disabled before quarantine stays non-mergeable.
 
 To reinstall a preserved plugin:
 

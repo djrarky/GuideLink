@@ -3,11 +3,14 @@
 namespace AppLocalPlugins\GuideLink\Actions;
 
 use App\Models\Channel;
+use App\Models\Playlist;
 use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
+use AppLocalPlugins\GuideLink\Services\ChannelQuarantineService;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
+use Illuminate\Support\Facades\DB;
 
 class RepairAvailabilityAction extends GuideLinkAction
 {
@@ -52,6 +55,16 @@ class RepairAvailabilityAction extends GuideLinkAction
         ]);
 
         $channelRows = $analyzer->channelRows($playlist, $channels, $scrubberChannelIds);
+        $quarantined = DB::table(ChannelQuarantineService::TABLE)
+            ->where('extension_plugin_id', $context->plugin->id)
+            ->where('playlist_id', $playlist->id)
+            ->pluck('channel_id')->flip()->all();
+        $channelRows = array_map(
+            fn (array $row): array => ! $row['enabled'] && isset($quarantined[$row['channel_id']])
+                ? [...$row, 'status' => 'quarantined']
+                : $row,
+            $channelRows,
+        );
         $repairRows = $this->repairRows($channelRows, $mode);
         $applied = 0;
 
@@ -60,20 +73,15 @@ class RepairAvailabilityAction extends GuideLinkAction
                 'candidates' => count($repairRows),
             ], log: true);
 
-            $applied = $this->reenableMasters($repairRows, $context);
-            $repairRows = array_map(
-                fn (array $row): array => [
-                    ...$row,
-                    'repair_applied' => $row['status'] === 'primary_disabled_with_enabled_fallback' ? '1' : $row['repair_applied'],
-                ],
-                $repairRows,
-            );
+            $repairRows = $this->reenableMasters($repairRows, $playlist, $context);
+            $applied = count(array_filter($repairRows, fn (array $row): bool => $row['repair_applied'] === '1'));
         } elseif (! $context->dryRun && $mode !== 'report_only') {
             $context->warning('Repair mode is not write-enabled yet; generated report only.', [
                 'repair_mode' => $mode,
             ]);
         }
 
+        $cancelled = $context->cancellationRequested();
         $summary = [
             ...$analyzer->summary($playlist, $channelRows),
             'repair' => [
@@ -83,7 +91,11 @@ class RepairAvailabilityAction extends GuideLinkAction
                 'reenable_master_candidates' => count(array_filter($repairRows, fn (array $row): bool => $row['status'] === 'primary_disabled_with_enabled_fallback')),
                 'scrubber_disabled_no_fallback' => count(array_filter($repairRows, fn (array $row): bool => $row['status'] === 'scrubber_disabled_no_fallback')),
                 'disabled_no_fallback' => count(array_filter($repairRows, fn (array $row): bool => $row['status'] === 'disabled_no_fallback')),
+                'quarantined' => count(array_filter($repairRows, fn (array $row): bool => $row['status'] === 'quarantined')),
                 'applied' => $applied,
+                'failed' => count(array_filter($repairRows, fn (array $row): bool => $row['repair_error'] !== '')),
+                'skipped' => count(array_filter($repairRows, fn (array $row): bool => $row['repair_skip_reason'] !== '' && $row['repair_skip_reason'] !== 'cancelled')),
+                'cancelled' => $cancelled,
             ],
         ];
 
@@ -96,21 +108,34 @@ class RepairAvailabilityAction extends GuideLinkAction
             'repair',
         );
 
-        $context->checkpoint(100, 'Availability repair report completed.', [
+        $context->checkpoint(100, $cancelled ? 'Availability repair cancelled; partial results saved.' : 'Availability repair report completed.', [
             'repair' => $summary['repair'],
             'run_results' => $resultDetails,
         ], log: true);
+
+        $data = [
+            ...$summary,
+            'totals' => $summary['repair'],
+            'run_results' => $resultDetails,
+            'progress' => 100,
+        ];
+
+        if ($cancelled) {
+            return PluginActionResult::cancelled(
+                "Repair action cancelled for {$playlist->name}: {$applied} channel(s) updated; partial results saved.",
+                $data,
+            );
+        }
+
+        if ($summary['repair']['failed'] > 0) {
+            return PluginActionResult::failure('Availability repair had write failures; successful repairs and failure details were saved.', $data);
+        }
 
         return PluginActionResult::success(
             $context->dryRun
                 ? "Repair report completed for {$playlist->name}."
                 : "Repair action completed for {$playlist->name}: {$applied} channel(s) updated.",
-            [
-                ...$summary,
-                'totals' => $summary['repair'],
-                'run_results' => $resultDetails,
-                'progress' => 100,
-            ],
+            $data,
         );
     }
 
@@ -124,6 +149,7 @@ class RepairAvailabilityAction extends GuideLinkAction
             'primary_disabled_with_enabled_fallback',
             'scrubber_disabled_no_fallback',
             'disabled_no_fallback',
+            'quarantined',
         ];
 
         return array_values(array_map(
@@ -132,6 +158,8 @@ class RepairAvailabilityAction extends GuideLinkAction
                 'repair_mode' => $mode,
                 'repair_action' => $this->repairAction((string) $row['status'], $mode),
                 'repair_applied' => '0',
+                'repair_skip_reason' => '',
+                'repair_error' => '',
             ],
             array_filter($channelRows, fn (array $row): bool => in_array($row['status'], $repairableStatuses, true)),
         ));
@@ -140,6 +168,7 @@ class RepairAvailabilityAction extends GuideLinkAction
     private function repairAction(string $status, string $mode): string
     {
         return match (true) {
+            $status === 'quarantined' => 'keep_disabled',
             $mode === 'reenable_master' && $status === 'primary_disabled_with_enabled_fallback' => 'reenable_master',
             $status === 'primary_disabled_with_enabled_fallback' => 'review_disabled_primary',
             $status === 'scrubber_disabled_no_fallback' => 'review_scrubber_disablement',
@@ -149,15 +178,16 @@ class RepairAvailabilityAction extends GuideLinkAction
 
     /**
      * @param  array<int, array<string, mixed>>  $repairRows
+     * @return array<int, array<string, mixed>>
      */
-    private function reenableMasters(array $repairRows, PluginExecutionContext $context): int
+    private function reenableMasters(array $repairRows, Playlist $playlist, PluginExecutionContext $context): array
     {
         $updated = 0;
         $total = count($repairRows);
 
         foreach ($repairRows as $index => $row) {
             if ($context->cancellationRequested()) {
-                return $updated;
+                break;
             }
 
             if (RunProgress::shouldHeartbeat($index, $total)) {
@@ -174,15 +204,67 @@ class RepairAvailabilityAction extends GuideLinkAction
                 continue;
             }
 
-            Channel::query()
-                ->whereKey((int) $row['channel_id'])
-                ->firstOrFail()
-                ->forceFill(['enabled' => true])
-                ->save();
+            try {
+                $reason = DB::transaction(function () use ($row, $playlist, $context): string {
+                    // Lock in the same order as quarantine writes: channel, then quarantine state.
+                    $channel = Channel::query()
+                        ->where('playlist_id', $playlist->id)
+                        ->where('user_id', $playlist->user_id)
+                        ->where('is_vod', false)
+                        ->where('uuid', $row['channel_uuid'])
+                        ->whereKey((int) $row['channel_id'])
+                        ->lockForUpdate()->first();
 
-            $updated++;
+                    if ($context->cancellationRequested()) {
+                        return 'cancelled';
+                    }
+                    if (! $channel) {
+                        return 'channel_unavailable';
+                    }
+                    if (DB::table(ChannelQuarantineService::TABLE)
+                        ->where('extension_plugin_id', $context->plugin->id)
+                        ->where('playlist_id', $playlist->id)
+                        ->where('channel_id', $channel->id)
+                        ->lockForUpdate()->first()) {
+                        return 'quarantined';
+                    }
+                    if ($channel->enabled) {
+                        return 'already_enabled';
+                    }
+                    if (! $channel->failovers()->whereHas('channelFailover', fn ($query) => $query
+                        ->where('enabled', true)->where('is_vod', false)->where('user_id', $playlist->user_id))->exists()) {
+                        return 'no_enabled_failover';
+                    }
+
+                    $channel->forceFill(['enabled' => true])->save();
+
+                    return '';
+                });
+            } catch (\Throwable $exception) {
+                $repairRows[$index]['repair_skip_reason'] = 'write_failed';
+                $repairRows[$index]['repair_error'] = $exception->getMessage();
+
+                continue;
+            }
+
+            $repairRows[$index]['repair_skip_reason'] = $reason;
+            if ($reason === '') {
+                $repairRows[$index]['repair_applied'] = '1';
+                $updated++;
+            }
+            if ($reason === 'cancelled') {
+                break;
+            }
         }
 
-        return $updated;
+        if ($context->cancellationRequested()) {
+            foreach ($repairRows as &$row) {
+                if ($row['repair_action'] === 'reenable_master' && $row['repair_applied'] === '0' && $row['repair_skip_reason'] === '') {
+                    $row['repair_skip_reason'] = 'cancelled';
+                }
+            }
+        }
+
+        return $repairRows;
     }
 }

@@ -136,6 +136,7 @@ class NativeSourceTest extends PluginFeatureTestCase
                 'name' => 'Scraper Source',
                 'enabled' => true,
                 'settings' => json_encode([
+                    'min_channels' => 1,
                     'source_mode' => 'scraper_cache',
                     'provider' => 'sky',
                     'provider_source' => 'viewersvault',
@@ -181,5 +182,25 @@ class NativeSourceTest extends PluginFeatureTestCase
         $this->assertSame('sky', $details['provider']);
         $this->assertSame('viewersvault', $details['provider_source']);
         $this->assertSame('1', $details['region']);
+    }
+
+    public function test_native_source_combines_equivalent_duplicates_and_rejects_conflicting_services(): void
+    {
+        [$context, $playlist] = $this->context();
+        foreach (['BBC One HD', 'BBC One SD'] as $title) {
+            $channel = Channel::factory()->createQuietly([
+                'playlist_id' => $playlist->id, 'user_id' => $context->user->id, 'group_id' => null,
+                'enabled' => true, 'is_vod' => false, 'channel' => 101, 'title' => $title, 'name' => $title,
+            ]);
+        }
+        $loader = new ParsedSourceLoader(new SourceCacheService);
+        $payload = ['source_mode' => 'native_playlist', 'source_playlist_id' => $playlist->id];
+        $entries = $loader->entries($payload, $context, [101 => 'bbc.one']);
+        $this->assertCount(1, $entries);
+        $this->assertContains('BBC One SD', $entries[0]['aliases']);
+        $channel->forceFill(['title' => 'BBC Two', 'name' => 'BBC Two'])->saveQuietly();
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('conflicting channels at number [101]');
+        $loader->entries($payload, $context, [101 => 'bbc.one']);
     }
 }

@@ -6,6 +6,7 @@ use App\Models\Channel;
 use App\Models\Playlist;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
+use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 use Illuminate\Database\Eloquent\Collection;
@@ -62,8 +63,20 @@ class ScopeFilter
     {
         $scope = [];
         foreach (self::LIST_KEYS as $name => $key) {
-            $scope[$name] = Options::list($payload, $settings, $key, ProfileDefaults::list($key));
+            $patterns = str_ends_with($name, '_patterns');
+            $scope[$name] = $patterns
+                ? Options::patterns($payload, $settings, $key, ProfileDefaults::list($key))
+                : Options::list($payload, $settings, $key, ProfileDefaults::list($key));
+            if ($patterns) {
+                foreach ($scope[$name] as $pattern) {
+                    if (@preg_match($this->countryRules->regex($pattern, 'iu'), '') === false) {
+                        throw new \RuntimeException("Invalid regex in [{$key}]. Correct this rule before syncing.");
+                    }
+                }
+            }
         }
+
+        $scope['managed_group_keys'] = array_fill_keys($payload['_managed_group_keys'] ?? [], true);
 
         return $scope;
     }
@@ -77,24 +90,22 @@ class ScopeFilter
         $group = ChannelAttributes::groupName($channel);
         $title = ChannelAttributes::title($channel);
 
-        if ($scope['include_prefixes'] !== [] && ! $this->countryRules->startsWithAny($group, $scope['include_prefixes'])) {
-            return 'group_prefix';
-        }
-
-        if ($this->countryRules->matchesAny($group, $scope['exclude_group_patterns'])) {
-            return 'group_excluded';
-        }
-
-        if (in_array($group, $scope['preserve_groups'], true)) {
-            return 'group_preserved';
-        }
-
-        if ($this->countryRules->matchesAny($group, $scope['preserve_group_patterns'])) {
+        if ($this->preservesGroup($group, $scope['preserve_groups'], $scope['preserve_group_patterns'])) {
             return 'group_preserved';
         }
 
         if ($this->countryRules->matchesAny($title, $scope['preserve_title_patterns'])) {
             return 'title_preserved';
+        }
+
+        if ($scope['include_prefixes'] !== []
+            && ! $this->countryRules->startsWithAny($group, $scope['include_prefixes'])
+            && ! isset($scope['managed_group_keys'][GroupIdentity::key($group)])) {
+            return 'group_prefix';
+        }
+
+        if ($this->countryRules->matchesAny($group, $scope['exclude_group_patterns'])) {
+            return 'group_excluded';
         }
 
         // Decorative separators identify playlist headings across providers.
@@ -111,6 +122,17 @@ class ScopeFilter
         }
 
         return null;
+    }
+
+    /**
+     * Shared by channel scope and group planning so preservation has one meaning.
+     *
+     * @param  array<int, string>  $names
+     * @param  array<int, string>  $patterns
+     */
+    public function preservesGroup(string $group, array $names, array $patterns): bool
+    {
+        return in_array($group, $names, true) || $this->countryRules->matchesAny($group, $patterns);
     }
 
     private function excludedRow(Playlist $playlist, Channel $channel, string $reason): array

@@ -7,9 +7,14 @@ and keeps their names, numbers, and groups aligned with provider listings.
 
 - Reuse matching profiles and channel aliases across playlists.
 - Fetch provider listings and retain a cached copy when a refresh fails.
+- Report failures, cache fallback and recovery through m3u-editor's native notifications and alert channels, with persistent duplicate suppression.
 - Preview matches and channel changes before applying them.
+- Reject ambiguous source data and stale write plans; retain partial results when a run is cancelled or fails.
+- Choose EPG or provider logos while retaining custom logo overrides.
+- Keep managed groups stable through imports and optionally disable excluded or unmatched channels.
 - Check channel availability and failover coverage.
 - Configure m3u-editor's native auto-merge and scrubber settings.
+- Optionally protect guide order and channel numbers with profile-managed playlist layout settings, with per-setting previews and sorting-conflict reports.
 
 ## Requirements
 

@@ -185,6 +185,34 @@ class MatchingSafetyTest extends PluginFeatureTestCase
         }
     }
 
+    public function test_fingerprints_do_not_override_numbered_or_timeshift_identity_conflicts(): void
+    {
+        foreach (['Discovery Channel +1', 'Discovery Channel 2'] as $title) {
+            $result = $this->match(['title' => $title, 'channel' => 125, 'stream_id' => 'discovery.uk']);
+            $this->assertSame('needs_review', $result['decision']);
+            $this->assertStringContainsString('Fingerprint conflicts', $result['review_reason']);
+        }
+        $alias = ['DISC CHNL 2' => [5 => 'Provider names']];
+        $this->assertSame('fingerprint', $this->match(['title' => 'DISC CHNL 2', 'channel' => 125, 'stream_id' => 'discovery.uk'], $alias)['decision']);
+        $alias = ['DISC CHNL +1' => [5 => 'Provider names']];
+        $this->assertSame('needs_review', $this->match(['title' => 'DISC CHNL +1', 'channel' => 125, 'stream_id' => 'discovery.uk'], $alias)['decision']);
+    }
+
+    public function test_fingerprints_do_not_override_names_identifying_another_service(): void
+    {
+        $countries = new CountryRulesRepository;
+        $rules = $countries->resolve([], []);
+        $matcher = new ChannelMatcher($countries);
+        $entries = [];
+        foreach (['Discovery Channel', 'History Channel'] as $i => $name) {
+            $entries[] = ['number' => 101 + $i, 'name' => $name, 'category' => 'Test', 'aliases' => [], 'stream_id' => 'guide.'.$i, 'guide_valid' => true];
+        }
+        $channel = (new Channel)->forceFill(['title' => 'History Channel', 'channel' => 101, 'stream_id' => 'guide.0']);
+        $result = $matcher->match($channel, $matcher->sourceIndex($entries, $rules), $matcher->thresholds([], []));
+        $this->assertSame('needs_review', $result['decision']);
+        $this->assertStringContainsString('another source channel', $result['review_reason']);
+    }
+
     private function match(array $attributes, array $aliases = []): array
     {
         $countries = new CountryRulesRepository;

@@ -41,6 +41,7 @@ class RunResultRepository
         array $matchRows,
         array $excludedRows,
         array $writePlan,
+        array $quarantinePlan = [],
     ): array {
         $plansByChannel = [];
         foreach ($writePlan as $plan) {
@@ -57,9 +58,13 @@ class RunResultRepository
                 : $row;
         }, $matchRows);
 
+        $quarantinesByChannel = array_column($quarantinePlan, null, 'channel_id');
+        $withQuarantine = fn (array $row): array => isset($quarantinesByChannel[$row['channel_id']])
+            ? [...$row, 'quarantine_plan' => $quarantinesByChannel[$row['channel_id']]]
+            : $row;
         $rows = [
-            ...$this->mapRows($matchRows, 'sync_match', 'decision'),
-            ...$this->mapRows($excludedRows, 'sync_excluded', 'decision'),
+            ...$this->mapRows(array_map($withQuarantine, $matchRows), 'sync_match', 'decision'),
+            ...$this->mapRows(array_map($withQuarantine, $excludedRows), 'sync_excluded', 'decision'),
         ];
 
         return $this->replace($context, $playlistId, ['sync_match', 'sync_excluded'], $rows);
@@ -95,16 +100,7 @@ class RunResultRepository
         }
 
         $now = now();
-        $records = array_map(fn (array $row): array => [
-            'extension_plugin_id' => (int) $context->plugin->id,
-            'extension_plugin_run_id' => (int) $context->run->id,
-            'playlist_id' => $playlistId,
-            ...$row,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ], $rows);
-
-        DB::transaction(function () use ($context, $playlistId, $resultTypes, $records): void {
+        DB::transaction(function () use ($context, $playlistId, $resultTypes, $rows, $now): void {
             DB::table(self::TABLE)
                 ->where('extension_plugin_id', $context->plugin->id)
                 ->where('extension_plugin_run_id', $context->run->id)
@@ -112,7 +108,22 @@ class RunResultRepository
                 ->whereIn('result_type', $resultTypes)
                 ->delete();
 
-            foreach (array_chunk($records, 250) as $chunk) {
+            $chunk = [];
+            foreach ($rows as $row) {
+                $chunk[] = [
+                    'extension_plugin_id' => (int) $context->plugin->id,
+                    'extension_plugin_run_id' => (int) $context->run->id,
+                    'playlist_id' => $playlistId,
+                    ...$row,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+                if (count($chunk) === 250) {
+                    DB::table(self::TABLE)->insert($chunk);
+                    $chunk = [];
+                }
+            }
+            if ($chunk !== []) {
                 DB::table(self::TABLE)->insert($chunk);
             }
         });

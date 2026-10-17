@@ -69,6 +69,7 @@ class ChannelMatcher
         array $rules,
         ?PluginExecutionContext $context = null,
     ): array {
+        RunProgress::checkCancellation($context);
         $sourceIndex = $this->sourceIndex($sourceEntries, $rules, $thresholds);
         $rows = [];
         $total = $channels->count();
@@ -81,6 +82,7 @@ class ChannelMatcher
                         'total' => $total,
                     ],
                 ]);
+                RunProgress::checkCancellation($context);
             }
 
             $result = $this->match($channel, $sourceIndex, $thresholds);
@@ -103,6 +105,9 @@ class ChannelMatcher
                 '_group_id' => $channel->group_id,
                 '_sort' => $channel->sort,
                 '_epg_channel_id' => $channel->epg_channel_id,
+                '_logo_type' => $channel->logo_type instanceof \BackedEnum ? $channel->logo_type->value : $channel->logo_type,
+                '_native_originals' => ChannelAttributes::nativeMetadata($channel),
+                '_decision_state' => ChannelAttributes::decisionState($channel),
             ];
         }
 
@@ -161,7 +166,10 @@ class ChannelMatcher
 
             $streamId = trim((string) ($source['stream_id'] ?? ''));
             if ($streamId !== '') {
-                $index['by_stream_id'][$streamId] ??= $source;
+                if (isset($index['by_stream_id'][$streamId]) && (int) $index['by_stream_id'][$streamId]['number'] !== $number) {
+                    throw new \RuntimeException("Source stream ID [{$streamId}] identifies more than one channel number.");
+                }
+                $index['by_stream_id'][$streamId] = $source;
             }
 
             $this->indexValue($index, 'by_name', $nameKey, $source);
@@ -246,7 +254,10 @@ class ChannelMatcher
             && isset($sourceIndex['by_stream_id'][$streamId])
             && (int) $sourceIndex['by_stream_id'][$streamId]['number'] === $channelNumber
         ) {
-            return $this->matched('fingerprint', 1, $streamId, $sourceIndex['by_stream_id'][$streamId]);
+            $source = $sourceIndex['by_stream_id'][$streamId];
+            $reason = $this->fingerprintReviewReason($keys, $source, $sourceIndex, $thresholds, (string) ($channel->stream_id ?: $streamId));
+
+            return $this->matched($reason === '' ? 'fingerprint' : 'needs_review', 1, $streamId, $source, 100, [], $reason);
         }
 
         foreach ([['by_name', 'name', 2], ['by_profile_alias', 'profile_alias', 3], ['by_alias', 'alias', 3]] as [$bucket, $label, $tier]) {
@@ -312,6 +323,33 @@ class ChannelMatcher
             // A written guide ID must not replace the provider's original
             // identity evidence when corroborating a primary-service number.
             ?? $this->fuzzyResult($keys, $sourceIndex, $thresholds, (string) ($channel->stream_id ?: $streamId));
+    }
+
+    /** A remembered ID/number cannot override contradictory identity evidence. */
+    private function fingerprintReviewReason(array $keys, array $source, array $index, array $thresholds, string $streamId): string
+    {
+        $sourceNorm = $index['norm_by_number'][(int) $source['number']];
+        [$sourceNumbers, $sourceShift] = $this->identityMarkers($sourceNorm);
+        foreach ($keys as $key) {
+            [$numbers, $shift] = $this->identityMarkers($key);
+            if ($shift !== $sourceShift) {
+                return 'Fingerprint conflicts with the channel timeshift identity.';
+            }
+            $hits = $this->lookup([$key], $index, 'by_compact') + $this->lookup([$key], $index, 'by_profile_compact');
+            foreach ($hits as $number => $hit) {
+                if ((int) $number !== (int) $source['number']) {
+                    return 'Fingerprint conflicts with a name identifying another source channel.';
+                }
+            }
+            if ($numbers !== $sourceNumbers && ! isset($hits[(int) $source['number']])) {
+                $reason = $this->fuzzyReviewReason($key, $source, $index, $thresholds, $streamId);
+                if ($reason !== '') {
+                    return 'Fingerprint conflicts with the numbered channel identity.';
+                }
+            }
+        }
+
+        return '';
     }
 
     /** Collect distinct services without choosing a winner during lookup. */

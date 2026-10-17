@@ -9,6 +9,10 @@ use AppLocalPlugins\GuideLink\Sources\Contracts\ProviderSource;
 use AppLocalPlugins\GuideLink\Sources\Contracts\SourceRequest;
 use AppLocalPlugins\GuideLink\Sources\SourceRegistry;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
+use AppLocalPlugins\GuideLink\Support\RunCancelled;
+use AppLocalPlugins\GuideLink\Support\RunProgress;
+use AppLocalPlugins\GuideLink\Support\SourceRefreshFailed;
+use Illuminate\Support\Facades\Cache;
 use Throwable;
 
 /**
@@ -33,45 +37,62 @@ class SourceRefreshService
      */
     public function refresh(array $payload, PluginExecutionContext $context): array
     {
+        RunProgress::checkCancellation($context);
         $config = $this->cache->config($payload, []);
-        $rules = $this->countryRules->resolve($payload, []);
-        $request = SourceRequest::fromConfig($config);
-        $request->assertSupported();
-
-        if ($this->scrapers->requiresApiKey((string) $config['scraping_api']) && $config['scraping_api_key'] === '') {
-            throw new \RuntimeException("Scraper API key is required for [{$config['scraping_api']}].");
-        }
-
-        if ($config['force_refresh'] === false && $this->cache->isFresh($config)) {
-            try {
-                $cached = $this->cache->readLastGood($config);
-                $context->info('Using fresh parsed source cache.', [
-                    'source_cache_path' => $cached['path'],
-                    'channel_count' => count($cached['entries']),
-                    'fetched_at' => $cached['metadata']['fetched_at'] ?? null,
-                ]);
-
-                return $this->cachedResult($cached, staleFallback: false);
-            } catch (Throwable $exception) {
-                $context->warning('Fresh source cache could not be read; attempting a live refresh.', [
-                    'error' => $exception->getMessage(),
-                ]);
-            }
-        }
-
-        $source = $this->sources->provider($request->provider);
-        $definition = $source->definition($request->source);
-        $scraper = $this->scrapers->make((string) $config['scraping_api']);
-
+        $alerts = new NativeAlertService;
+        $sourceValidated = false;
         try {
-            return $this->refreshFromSource($config, $rules, $request, $source, $definition, $scraper, $context);
+            $rules = $this->countryRules->resolve($payload, []);
+            $request = SourceRequest::fromConfig($config);
+            $request->assertSupported();
+            $sourceValidated = true;
+
+            if ($config['force_refresh'] === false && $this->cache->isFresh($config)) {
+                try {
+                    $cached = $this->cache->readLastGood($config);
+                    $context->info('Using fresh parsed source cache.', [
+                        'source_cache_path' => $cached['path'],
+                        'channel_count' => count($cached['entries']),
+                        'fetched_at' => $cached['metadata']['fetched_at'] ?? null,
+                    ]);
+
+                    return $this->cachedResult($cached, staleFallback: false);
+                } catch (Throwable $exception) {
+                    $context->warning('Fresh source cache could not be read; attempting a live refresh.', [
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
+            }
+
+            $source = $this->sources->provider($request->provider);
+            $definition = $source->definition($request->source);
+            $scraper = $this->scrapers->make((string) $config['scraping_api']);
+            if ($this->scrapers->requiresApiKey((string) $config['scraping_api']) && $config['scraping_api_key'] === '') {
+                throw new \RuntimeException("Scraper API key is required for [{$config['scraping_api']}].");
+            }
+
+            $result = $this->refreshFromSource($config, $rules, $request, $source, $definition, $scraper, $context);
+            if (! $result['summary']['source']['from_cache']) {
+                $alerts->sourceRecovered($config, $context);
+            }
+
+            return $result;
+        } catch (RunCancelled $exception) {
+            throw $exception;
         } catch (Throwable $exception) {
+            RunProgress::checkCancellation($context);
+            if (! $sourceValidated) {
+                $alerts->sourceFailed($config, $exception, false, $context);
+                throw new SourceRefreshFailed($exception->getMessage());
+            }
             try {
                 $cached = $this->cache->readLastGood($config);
             } catch (Throwable) {
-                throw $exception;
+                $alerts->sourceFailed($config, $exception, false, $context);
+                throw new SourceRefreshFailed($exception->getMessage());
             }
 
+            $alerts->sourceFailed($config, $exception, true, $context);
             $context->warning('Source refresh failed; continuing with the parsed last-good cache.', [
                 'source_cache_path' => $cached['path'],
                 'channel_count' => count($cached['entries']),
@@ -97,6 +118,7 @@ class SourceRefreshService
         ScraperClient $scraper,
         PluginExecutionContext $context,
     ): array {
+        $revision = $this->cache->revision($config);
         $context->checkpoint(15, 'Fetching source region mapping.', [
             'provider' => $request->provider,
             'provider_source' => $request->source,
@@ -124,8 +146,6 @@ class SourceRefreshService
         $entries = $source->parseChannels($channelRaw, $region, $rules, $request->source);
         $previousCount = $this->cache->previousCount($config);
 
-        $this->validate($entries, $previousCount, $config);
-
         $metadata = [
             'country' => $request->country,
             'provider' => $request->provider,
@@ -140,19 +160,33 @@ class SourceRefreshService
             'source_checksum' => hash('sha256', $regionRaw."\0".$channelRaw),
             'source_version' => 1,
         ];
-        $path = $this->cache->writeLastGood($config, $entries, $metadata);
 
-        return [
-            'summary' => [
-                'source' => [
-                    ...$metadata,
-                    'from_cache' => false,
-                    'stale_fallback' => false,
-                    'last_good_cache_path' => $path,
-                ],
-            ],
-            'entries' => $entries,
-        ];
+        // Use the host's shared lock only for publishing, never across network
+        // requests. A slow fetch must not replace a snapshot another run published.
+        return Cache::lock('guidelink:source-publish:'.hash('sha256', $this->cache->parsedPath($config)), 30)
+            ->block(5, function () use ($config, $revision, $entries, $previousCount, $metadata, $context): array {
+                RunProgress::checkCancellation($context);
+                if ($this->cache->revision($config) !== $revision) {
+                    $cached = $this->cache->readLastGood($config);
+                    $context->info('Another refresh published this source while it was being fetched; retaining the newer cache.');
+
+                    return $this->cachedResult($cached, staleFallback: false);
+                }
+                $this->validate($entries, $previousCount, $config);
+                $path = $this->cache->writeLastGood($config, $entries, $metadata);
+
+                return [
+                    'summary' => [
+                        'source' => [
+                            ...$metadata,
+                            'from_cache' => false,
+                            'stale_fallback' => false,
+                            'last_good_cache_path' => $path,
+                        ],
+                    ],
+                    'entries' => $entries,
+                ];
+            });
     }
 
     /**

@@ -4,8 +4,11 @@ namespace AppLocalPlugins\GuideLink\Actions;
 
 use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
+use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
+use AppLocalPlugins\GuideLink\Support\ProfileSettings;
+use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Support\Facades\DB;
 
 class SyncPlaylistAction extends GuideLinkAction
@@ -39,6 +42,8 @@ class SyncPlaylistAction extends GuideLinkAction
         $groupSync = $this->services->groupSync($countryRules);
         $writePlans = $this->services->writePlans($countryRules);
         $channelWriter = $this->services->channelWriter();
+        $quarantine = $this->services->channelQuarantine();
+        $logoSource = ProfileSettings::logoSource($payload);
         $runResults = $this->services->runResults();
 
         $context->checkpoint(5, $context->dryRun ? 'Preparing sync playlist preview.' : 'Preparing sync playlist apply run.', log: true);
@@ -48,6 +53,8 @@ class SyncPlaylistAction extends GuideLinkAction
         $guide = $guideMaps->resolve($payload, $context);
         $autoMerge = $this->services->autoMergeSetup();
         $scrubber = $this->services->scrubberSetup();
+        $playlistSetup = $this->services->playlistSetup();
+        $playlistConfig = $playlistSetup->desiredConfig($playlist, $payload, $context);
         $autoMergeConfig = $autoMerge->desiredConfig($playlist, $payload, $context);
         $scrubberConfig = $scrubber->desiredConfig($playlist, $payload, $context);
         $sourceCache = $this->prepareSourceCache($payload, $context);
@@ -70,14 +77,18 @@ class SyncPlaylistAction extends GuideLinkAction
             'guide_channels' => count($guide['map']),
         ], log: true);
 
-        $channels = $channelRepository->liveChannels($playlist, false);
+        $channels = $channelRepository->liveChannels($playlist, true, includeFailovers: false);
         $scopePayload = $this->scopePayload($payload, $sourceEntries);
         $scope = $scopeFilter->split($playlist, $channels, $scopePayload, [], $rules);
         $groupsByName = $channelRepository->groupsByName($playlist, $rules);
-        $groupPlan = $groupSync->plan($sourceEntries, $rules, $groupsByName);
+        $groupPlan = $groupSync->plan($sourceEntries, $rules, $groupsByName, $payload);
+        $preservedGroupKeys = array_fill_keys(array_column(array_filter(
+            $groupPlan, fn (array $row): bool => $row['action'] === 'preserve',
+        ), 'group_key'), true);
 
         $context->checkpoint(45, 'Matching target channels to the configured source.', [
-            'total_enabled_live_channels' => $channels->count(),
+            'total_live_channels' => $channels->count(),
+            'total_enabled_live_channels' => $channels->where('enabled', true)->count(),
             'in_scope_channels' => $scope['included']->count(),
             'excluded_channels' => count($scope['excluded']),
         ]);
@@ -90,7 +101,13 @@ class SyncPlaylistAction extends GuideLinkAction
             $rules,
             $context,
         );
-        $writePlan = $writePlans->rows($matchRows, $groupsByName, $rules, $guide['channel_ids']);
+        $writePlan = $writePlans->rows($matchRows, $groupsByName, $rules, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+        $quarantinePlan = $quarantine->plan(
+            $playlist, $channels, [...$matchRows, ...$scope['excluded']],
+            Options::bool($payload, [], 'disable_other_groups', ProfileDefaults::bool('disable_other_groups')),
+            $context,
+        );
+        $quarantineResult = null;
         $groupResult = null;
         $writeResult = null;
 
@@ -99,28 +116,45 @@ class SyncPlaylistAction extends GuideLinkAction
         }
 
         $context->checkpoint(60, $context->dryRun
-            ? 'Previewing native auto-merge and scrubber settings.'
-            : 'Applying native auto-merge and scrubber settings.', log: true);
+            ? 'Previewing native playlist layout, auto-merge and scrubber settings.'
+            : 'Applying native playlist layout, auto-merge and scrubber settings.', log: true);
 
-        $nativeSettings = DB::transaction(function () use ($playlist, $autoMerge, $scrubber, $autoMergeConfig, $scrubberConfig, $context, $runResults): array {
+        $nativeSettings = DB::transaction(function () use ($playlist, $autoMerge, $scrubber, $playlistSetup, $autoMergeConfig, $scrubberConfig, $playlistConfig, $context, $runResults): array {
             if (! $context->dryRun) {
-                $playlist = $playlist->newQuery()->whereKey($playlist->id)->lockForUpdate()->firstOrFail();
+                $playlist = $playlist->newQuery()->where('user_id', $playlist->user_id)->whereKey($playlist->id)->lockForUpdate()->firstOrFail();
             }
+            RunProgress::checkCancellation($context);
             $rows = [
-                'auto_merge' => $autoMerge->apply($playlist, $autoMergeConfig, $context->dryRun),
+                'playlist_layout' => $playlistSetup->apply($playlist, $playlistConfig, $context->dryRun, deferSave: true),
+                'auto_merge' => $autoMerge->apply($playlist, $autoMergeConfig, $context->dryRun, deferSave: true),
                 'scrubber' => $scrubber->apply($playlist, $scrubberConfig, $context->dryRun),
             ];
+            // Commit both sets of playlist attributes together so native update hooks
+            // observe the complete configuration and run only once.
+            if (! $context->dryRun && $playlist->isDirty()) {
+                $playlist->save();
+            }
             $runResults->replaceRows($context, (int) $playlist->id, [$rows['auto_merge']], 'auto_merge_audit');
             $runResults->replaceRows($context, (int) $playlist->id, [$rows['scrubber']], 'scrubber_audit');
+            $runResults->replaceRows($context, (int) $playlist->id, [
+                $rows['playlist_layout'], ...$rows['playlist_layout']['details']['checks'],
+            ], 'playlist_layout_audit');
 
             return $rows;
         });
+
+        if ($nativeSettings['playlist_layout']['details']['warnings'] > 0) {
+            $context->warning('Playlist automation may override GuideLink layout. Review the playlist layout audit for the specific rules to adjust.', [
+                'playlist_id' => (int) $playlist->id,
+                'warnings' => $nativeSettings['playlist_layout']['details']['warnings'],
+            ]);
+        }
 
         if (! $context->dryRun) {
             $groupActionCounts = array_count_values(array_column($groupPlan, 'action'));
             $context->checkpoint(70, 'Ensuring managed live groups exist.', [
                 'groups_to_create' => $groupActionCounts['create'] ?? 0,
-                'groups_to_update' => $groupActionCounts['update_sort'] ?? 0,
+                'groups_to_update' => ($groupActionCounts['update_sort'] ?? 0) + ($groupActionCounts['protect'] ?? 0) + ($groupActionCounts['restore'] ?? 0),
             ], log: true);
 
             $groupResult = $groupSync->apply($playlist, $groupPlan, $context);
@@ -132,6 +166,7 @@ class SyncPlaylistAction extends GuideLinkAction
                     $matchRows,
                     $scope['excluded'],
                     $writePlan,
+                    $quarantinePlan,
                 );
 
                 $data = [
@@ -148,7 +183,7 @@ class SyncPlaylistAction extends GuideLinkAction
                     : PluginActionResult::failure('Group setup failed; channel metadata writes were aborted.', $data);
             }
 
-            $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $rules, $guide['channel_ids']);
+            $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $rules, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
 
             $context->checkpoint(82, 'Applying diff-only channel metadata writes.', [
                 'write_plan_channels' => count($writePlan),
@@ -156,17 +191,12 @@ class SyncPlaylistAction extends GuideLinkAction
 
             $writeResult = $channelWriter->apply($writePlan, $context);
             if (! $writeResult['aborted'] && $writeResult['channels_failed'] === 0
-                && ! $context->cancellationRequested()
-                && Options::bool($payload, [], 'disable_other_groups', ProfileDefaults::bool('disable_other_groups'))) {
-                $writeResult['unmanaged_channels_disabled'] = $channelWriter->disableOtherGroups(
-                    $playlist,
-                    $scope['included']->whereNotIn('id', array_column(array_filter(
-                        $matchRows, fn (array $row): bool => $row['decision'] === 'needs_review',
-                    ), 'channel_id')),
-                    $groupResult['managed_group_ids'],
-                    $writeResult['written_ids'],
-                    $context,
-                );
+                && ! $context->cancellationRequested()) {
+                $quarantineResult = $quarantine->apply($playlist, $quarantinePlan, $context, $writePlan);
+                $writeResult['unmanaged_channels_disabled'] = $quarantineResult['disabled'];
+                $writeResult['channels_failed'] += $quarantineResult['failed'];
+                $writeResult['errors'] = [...$writeResult['errors'], ...$quarantineResult['errors']];
+                $writeResult['aborted'] = $quarantineResult['aborted'];
             }
             $writeResult['aborted'] = $writeResult['aborted'] || $context->cancellationRequested();
         }
@@ -194,6 +224,7 @@ class SyncPlaylistAction extends GuideLinkAction
             $matchRows,
             $scope['excluded'],
             $writePlan,
+            $quarantinePlan,
         );
 
         $data = [
@@ -201,6 +232,11 @@ class SyncPlaylistAction extends GuideLinkAction
             'totals' => $this->totals($summary),
             'source_cache' => $sourceCache,
             'native_settings' => $nativeSettings,
+            'quarantine' => [
+                'planned' => count($quarantinePlan),
+                'to_disable' => count(array_filter($quarantinePlan, fn (array $row): bool => $row['action'] === 'quarantine' && $row['current']['enabled'])),
+                'result' => $quarantineResult,
+            ],
             'run_results' => $resultDetails,
             'sync_preview' => $context->dryRun,
             'writes_enabled' => ! $context->dryRun,
@@ -211,7 +247,7 @@ class SyncPlaylistAction extends GuideLinkAction
             return PluginActionResult::cancelled('Sync cancelled; changes already applied have been retained.', $data);
         }
         if ($summary['writes']['channels_failed'] > 0) {
-            return PluginActionResult::failure('Sync had channel write failures; successful changes were retained and disabling unmanaged channels was skipped.', $data);
+            return PluginActionResult::failure('Sync had channel write failures; inspect the write and quarantine results. Successful changes were retained.', $data);
         }
 
         $context->checkpoint(100, $context->dryRun ? 'Sync playlist preview completed.' : 'Sync playlist apply completed.', [
@@ -223,7 +259,7 @@ class SyncPlaylistAction extends GuideLinkAction
         return PluginActionResult::success(
             $context->dryRun
                 ? 'Sync preview completed without changing native settings or channel metadata.'
-                : "Sync completed: native settings checked and {$summary['writes']['channels_written']} channel(s) written.",
+                : "Sync completed: {$summary['writes']['channels_written']} channel metadata update(s), {$summary['writes']['unmanaged_channels_disabled']} channel(s) disabled.",
             [...$data, 'progress' => 100],
         );
     }
@@ -235,6 +271,7 @@ class SyncPlaylistAction extends GuideLinkAction
      */
     private function scopePayload(array $payload, array $sourceEntries): array
     {
+        unset($payload['_managed_group_keys']);
         if (! Options::bool($payload, [], 'include_managed_groups', ProfileDefaults::bool('include_managed_groups'))) {
             return $payload;
         }
@@ -248,13 +285,13 @@ class SyncPlaylistAction extends GuideLinkAction
         foreach ($sourceEntries as $entry) {
             $category = (string) $entry['category'];
             if ($category !== '') {
-                $categories[$category] = true;
+                $categories[GroupIdentity::key($category)] = true;
             }
         }
 
         return [
             ...$payload,
-            'include_group_prefixes' => array_values(array_unique([...$prefixes, ...array_keys($categories)])),
+            '_managed_group_keys' => array_keys($categories),
         ];
     }
 

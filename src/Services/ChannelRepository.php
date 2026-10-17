@@ -8,6 +8,7 @@ use App\Models\Group;
 use App\Models\Playlist;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
+use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
@@ -18,15 +19,20 @@ class ChannelRepository
     /**
      * @return Collection<int, Channel>
      */
-    public function liveChannels(Playlist $playlist, bool $includeDisabled): Collection
+    public function liveChannels(Playlist $playlist, bool $includeDisabled, bool $includeFailovers = true): Collection
     {
         $query = Channel::query()
             ->where('playlist_id', $playlist->id)
             ->where('is_vod', false)
-            ->with(['group', 'failovers.channelFailover'])
+            ->with(['group' => fn ($query) => $query->withTrashed()])
             ->orderBy('group_internal')
             ->orderBy('channel')
-            ->orderBy('name');
+            ->orderBy('name')
+            ->orderBy('id');
+
+        if ($includeFailovers) {
+            $query->with('failovers.channelFailover');
+        }
 
         if (! $includeDisabled) {
             $query->where('enabled', true);
@@ -49,7 +55,7 @@ class ChannelRepository
             ->whereHas('channelScrubberLog', function (Builder $query) use ($playlist): void {
                 $query->where('playlist_id', $playlist->id);
             })
-            ->pluck('channel_id')
+            ->distinct()->pluck('channel_id')
             ->mapWithKeys(fn (mixed $id): array => [(int) $id => true])
             ->all();
     }
@@ -62,17 +68,27 @@ class ChannelRepository
     {
         $groups = [];
 
-        Group::query()
+        Group::withTrashed()
             ->where('playlist_id', $playlist->id)
+            ->where('is_merged', false)
+            ->where(function (Builder $query): void {
+                $query->where(function (Builder $query): void {
+                    $query->where('custom', true)->whereNull('deleted_at');
+                })->orWhere(function (Builder $query): void {
+                    $query->where('custom', false)->whereNull('import_batch_no')->whereNull('source_group_id');
+                });
+            })
             ->where(function (Builder $query): void {
                 $query->whereNull('type')->orWhere('type', 'live');
             })
+            ->orderByRaw('CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END')
+            ->orderByDesc('custom')
             ->orderBy('sort_order')
             ->orderBy('name')
             ->orderBy('id')
             ->get()
-            ->each(function (Group $group) use (&$groups, $rules): void {
-                $key = $this->countryRules->normalize((string) $group->name, $rules);
+            ->each(function (Group $group) use (&$groups): void {
+                $key = GroupIdentity::key((string) $group->name);
                 if ($key !== '' && ! isset($groups[$key])) {
                     $groups[$key] = $group;
                 }
@@ -82,7 +98,7 @@ class ChannelRepository
     }
 
     /**
-     * @return array{total: int, enabled: int, enabled_titles: array<int, string>}
+     * @return array{total: int, enabled: int, enabled_ids: array<int, int>, enabled_titles: array<int, string>}
      */
     public function failoverSummary(Channel $channel): array
     {
@@ -90,18 +106,25 @@ class ChannelRepository
             ? $channel->failovers
             : $channel->failovers()->with('channelFailover')->get();
 
+        $channels = [];
         $enabledTitles = [];
         foreach ($failovers as $failover) {
-            $failoverChannel = $failover->channelFailover;
-            if ($failoverChannel && $failoverChannel->enabled) {
-                $enabledTitles[] = ChannelAttributes::title($failoverChannel);
+            $backup = $failover->channelFailover;
+            if (! $backup || $backup->is_vod || (int) $backup->user_id !== (int) $channel->user_id
+                || (int) $backup->id === (int) $channel->id) {
+                continue;
+            }
+            $channels[(int) $backup->id] = true;
+            if ($backup->enabled) {
+                $enabledTitles[(int) $backup->id] = ChannelAttributes::title($backup);
             }
         }
 
         return [
-            'total' => $failovers->count(),
+            'total' => count($channels),
             'enabled' => count($enabledTitles),
-            'enabled_titles' => $enabledTitles,
+            'enabled_ids' => array_keys($enabledTitles),
+            'enabled_titles' => array_values($enabledTitles),
         ];
     }
 }

@@ -5,6 +5,8 @@ namespace AppLocalPlugins\GuideLink\Actions;
 use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Services\GuideLinkServices;
+use AppLocalPlugins\GuideLink\Support\RunProgress;
+use Illuminate\Support\Facades\DB;
 
 class NativeSetupAction extends GuideLinkAction
 {
@@ -76,9 +78,18 @@ class NativeSetupAction extends GuideLinkAction
             ...($audit ? [] : ['dry_run' => $context->dryRun]),
         ]);
 
-        $rows = $audit
-            ? $service->auditRows($playlist, $desired)
-            : [$service->apply($playlist, $desired, $context->dryRun)];
+        [$rows, $resultDetails] = DB::transaction(function () use ($playlist, $audit, $context, $service, $desired): array {
+            if (! $audit && ! $context->dryRun) {
+                $playlist = $playlist->newQuery()->where('user_id', $playlist->user_id)->whereKey($playlist->id)->lockForUpdate()->firstOrFail();
+            }
+            RunProgress::checkCancellation($context);
+            $rows = $audit
+                ? $service->auditRows($playlist, $desired)
+                : [$service->apply($playlist, $desired, $context->dryRun)];
+            $details = $this->services->runResults()->replaceRows($context, (int) $playlist->id, $rows, $this->kind.'_audit');
+
+            return [$rows, $details];
+        });
         $summary = $service->summary($rows);
 
         if ($audit && (($summary['change_required'] ?? 0) > 0 || ($summary['warning'] ?? 0) > 0)) {
@@ -87,11 +98,6 @@ class NativeSetupAction extends GuideLinkAction
                 'warnings' => $summary['warning'] ?? 0,
             ]);
         }
-
-        if ($audit) {
-            $context->checkpoint(85, 'Saving '.$definition['noun'].' audit results.');
-        }
-        $resultDetails = $this->services->runResults()->replaceRows($context, (int) $playlist->id, $rows, $this->kind.'_audit');
 
         $past = $audit ? 'audit completed' : ($context->dryRun ? 'preview completed' : 'applied');
         $context->checkpoint(100, $definition['title'].' setup '.$past.'.', [

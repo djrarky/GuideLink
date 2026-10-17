@@ -31,6 +31,11 @@ class GuideLinkServices
         return new ChannelWriter;
     }
 
+    public function channelQuarantine(): ChannelQuarantineService
+    {
+        return new ChannelQuarantineService;
+    }
+
     public function countryRules(): CountryRulesRepository
     {
         return new CountryRulesRepository;
@@ -59,6 +64,11 @@ class GuideLinkServices
     public function playlistResolver(): PlaylistResolver
     {
         return new PlaylistResolver;
+    }
+
+    public function playlistSetup(): PlaylistSetupService
+    {
+        return new PlaylistSetupService;
     }
 
     public function profileRepository(): ProfileRepository

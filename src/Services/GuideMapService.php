@@ -92,6 +92,7 @@ class GuideMapService
             ->where('epg_id', $epg->id)
             ->orderBy('display_name')
             ->orderBy('channel_id')
+            ->orderBy('id')
             ->get(['id', 'channel_id', 'display_name', 'name', 'additional_display_names'])
             ->each(function (EpgChannel $channel) use (&$map, &$streamIds, &$aliases, &$channelIds): void {
                 $names = array_map(
@@ -113,6 +114,10 @@ class GuideMapService
                     throw new \RuntimeException("Guide EPG stream id [{$streamId}] appears against more than one channel number.");
                 }
 
+                if (isset($channelIds[$number])) {
+                    throw new \RuntimeException("Guide EPG has duplicate records for channel number [{$number}] and stream id [{$streamId}]. Remove the ambiguous guide record before syncing.");
+                }
+
                 $map[$number] = $streamId;
                 $channelIds[$number] = (int) $channel->id;
                 $streamIds[$streamId] = $number;
@@ -125,6 +130,7 @@ class GuideMapService
                 }
             });
 
+        $aliases = array_map(fn (array $names): array => array_values(array_unique($names)), $aliases);
         ksort($map);
 
         return $map;
@@ -136,18 +142,25 @@ class GuideMapService
         // Python reads the XMLTV number from a display-name that is only digits.
         // Prefer that exact signal before falling back to m3u-editor display names
         // like "101 BBC One".
-        foreach ($values as $value) {
-            if ($value !== '' && ctype_digit($value)) {
-                // A leading-zero guide slot (for example a radio slot) must
-                // not fall through and acquire a number from its station name.
-                return str_starts_with($value, '0') ? null : (int) $value;
-            }
+        $numbers = array_values(array_unique(array_filter($values, fn (string $value): bool => $value !== '' && ctype_digit($value))));
+        if (count($numbers) > 1) {
+            throw new \RuntimeException('Guide EPG contains conflicting channel-number labels. Resolve the ambiguous guide record before syncing.');
+        }
+        if ($numbers !== []) {
+            return str_starts_with($numbers[0], '0') ? null : (int) $numbers[0];
         }
 
         foreach ($values as $value) {
             if (preg_match('/^([1-9][0-9]{0,4})\s+\p{L}/u', $value, $matches) === 1) {
-                return (int) $matches[1];
+                $numbers[] = (int) $matches[1];
             }
+        }
+        $numbers = array_values(array_unique($numbers));
+        if (count($numbers) > 1) {
+            throw new \RuntimeException('Guide EPG contains conflicting channel-number labels. Resolve the ambiguous guide record before syncing.');
+        }
+        if ($numbers !== []) {
+            return $numbers[0];
         }
 
         return null;

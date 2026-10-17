@@ -13,10 +13,32 @@ use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 
 class ScrubberSetupActionPersistenceTest extends PluginFeatureTestCase
 {
     use RefreshDatabase;
+
+    public function test_deleted_selected_scrubber_does_not_report_successful_setup(): void
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
+        $this->assignProfile($context, $playlist);
+        $scrubber = ChannelScrubber::withoutEvents(fn () => ChannelScrubber::create([
+            'name' => 'Operator Scrubber', 'user_id' => $context->user->id,
+            'playlist_id' => $playlist->id, 'status' => 'pending',
+        ]));
+        Event::listen('eloquent.updated: '.get_class($context->run), function ($run) use ($context, $scrubber): void {
+            if ($run->id === $context->run->id && $run->progress === 50) {
+                DB::table('channel_scrubbers')->where('id', $scrubber->id)->delete();
+            }
+        });
+        $result = $this->runGuideLinkAction('apply_scrubber_setup', [
+            'playlist_id' => $playlist->id, 'scrubber_id' => $scrubber->id,
+        ], $context);
+        $this->assertFalse($result->success);
+        $this->assertStringContainsString('no longer available', $result->summary);
+        $this->assertSame(0, ChannelScrubber::query()->where('playlist_id', $playlist->id)->count());
+    }
 
     public function test_apply_scrubber_setup_creates_guidelink_managed_native_scrubber_without_starting_a_scan(): void
     {

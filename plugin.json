@@ -1,7 +1,7 @@
 {
   "id": "guidelink",
   "name": "GuideLink",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "api_version": "1.0.0",
   "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
   "entrypoint": "Plugin.php",
@@ -328,6 +328,113 @@
             "name": "gl_aliases_plugin_idx"
           }
         ]
+      },
+      {
+        "name": "plugin_guidelink_quarantines",
+        "columns": [
+          {
+            "type": "id",
+            "name": "id"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_id",
+            "references": "extension_plugins",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "foreignId",
+            "name": "playlist_id",
+            "references": "playlists",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "foreignId",
+            "name": "channel_id",
+            "references": "channels",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "boolean",
+            "name": "original_can_merge"
+          },
+          {
+            "type": "timestamps"
+          }
+        ],
+        "indexes": [
+          {
+            "type": "unique",
+            "columns": [
+              "extension_plugin_id",
+              "channel_id"
+            ],
+            "name": "gl_quarantine_plugin_channel_unique"
+          }
+        ]
+      },
+      {
+        "name": "plugin_guidelink_alerts",
+        "columns": [
+          {
+            "type": "id",
+            "name": "id"
+          },
+          {
+            "type": "foreignId",
+            "name": "extension_plugin_id",
+            "references": "extension_plugins",
+            "on_delete": "cascade"
+          },
+          {
+            "type": "string",
+            "name": "incident_key",
+            "length": 64
+          },
+          {
+            "type": "boolean",
+            "name": "active",
+            "default": false
+          },
+          {
+            "type": "string",
+            "name": "severity",
+            "length": 16
+          },
+          {
+            "type": "integer",
+            "name": "occurrences",
+            "default": 0
+          },
+          {
+            "type": "timestamp",
+            "name": "last_seen_at",
+            "nullable": true
+          },
+          {
+            "type": "timestamp",
+            "name": "last_notified_at",
+            "nullable": true
+          },
+          {
+            "type": "timestamp",
+            "name": "resolved_at",
+            "nullable": true
+          },
+          {
+            "type": "timestamps"
+          }
+        ],
+        "indexes": [
+          {
+            "type": "unique",
+            "columns": [
+              "extension_plugin_id",
+              "incident_key"
+            ],
+            "name": "gl_alert_plugin_incident_unique"
+          }
+        ]
       }
     ],
     "ui_tables": [
@@ -396,7 +503,7 @@
             "enabled_only": true,
             "scope_plugin": true,
             "multiple": true,
-            "helper_text": "Optional shared channel aliases from Data \u2192 Alias Sets. Sets must use this profile\u2019s country; targets must exist in its guide."
+            "helper_text": "Optional shared channel aliases from Data → Alias Sets. Sets must use this profile’s country; targets must exist in its guide."
           },
           {
             "type": "section",
@@ -546,10 +653,22 @@
               },
               {
                 "id": "settings.disable_other_groups",
-                "label": "Quarantine Unmanaged Provider Groups After Matching",
+                "label": "Disable Excluded and Unmatched Channels",
                 "type": "boolean",
                 "default": false,
-                "helper_text": "Disables channels remaining in unmanaged provider groups after matching. Keep off unless explicitly desired."
+                "helper_text": "Disable unmatched channels and channels excluded by prefixes, group regex, headings, or non-linear rules, and block native auto-merge from re-enabling them. Preserved channels and matches needing review are untouched."
+              },
+              {
+                "id": "settings.logo_source",
+                "label": "Channel Logo Source",
+                "type": "select",
+                "default": "preserve",
+                "options": {
+                  "preserve": "Keep Existing Preference",
+                  "epg": "EPG Logos",
+                  "channel": "Provider Logos"
+                },
+                "helper_text": "Set the logo preference for matched channels, including disabled backups. Explicit custom logo overrides remain in place; EPG logos fall back to provider logos when missing."
               },
               {
                 "id": "settings.include_group_prefixes",
@@ -581,6 +700,43 @@
                 "label": "Preserve Channel Title Regex",
                 "type": "tags",
                 "helper_text": "Regex patterns for channel titles GuideLink must never rewrite."
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "label": "Playlist Layout",
+            "description": "Protect guide order and channel numbers through provider imports and playlist output. Enable management explicitly; these native settings affect the whole assigned playlist, including VOD.",
+            "fields": [
+              {
+                "id": "settings.playlist_layout_managed",
+                "label": "Let GuideLink Manage Playlist Layout",
+                "type": "boolean",
+                "default": false,
+                "helper_text": "Recommended for guide-based layouts. Disables Channel Auto Sort, Group Auto Sort and Force Channel Number Override. Preview Sync shows each change; Run Sync restores managed values on subsequent runs. Turning this off leaves the last applied settings in place."
+              },
+              {
+                "id": "settings.playlist_output_order",
+                "label": "Playlist Output Order",
+                "type": "select",
+                "default": "number",
+                "options": {
+                  "number": "Guide Channel Number Order",
+                  "group": "Group Order, Then Channel Order"
+                },
+                "helper_text": "Used only while GuideLink manages layout. Choose a flat list ordered by guide number or keep the guide group order with channels ordered inside each group."
+              },
+              {
+                "id": "settings.playlist_missing_numbers",
+                "label": "Automatic Numbering for Missing Numbers",
+                "type": "select",
+                "default": "preserve",
+                "options": {
+                  "preserve": "Keep Existing Preference",
+                  "enabled": "Enable Automatic Numbering",
+                  "disabled": "Disable Automatic Numbering"
+                },
+                "helper_text": "Used only while GuideLink manages layout. Controls Auto Channel Number Increment without replacing saved guide numbers. Keeps the native starting number and TVG ID choice; number-based TVG IDs can still require numbering unnumbered channels."
               }
             ]
           },
@@ -941,7 +1097,7 @@
             "label": "Run Availability",
             "type": "boolean",
             "default": true,
-            "helper_text": "Allow scheduled or assigned-playlist availability checks to include this playlist."
+            "helper_text": "Allow scheduled, playlist-sync hook, or assigned-playlist availability checks to include this playlist."
           }
         ]
       },
@@ -1050,7 +1206,7 @@
             "label": "Bundled Defaults",
             "type": "select",
             "options_provider": "guidelink_bundled_sets",
-            "placeholder": "None \u2014 custom aliases",
+            "placeholder": "None — custom aliases",
             "helper_text": "Choose a read-only dataset, or leave empty to manage this set in Aliases. Plugin updates replace bundled data directly. Preview its contents using Preview Alias Set."
           },
           {
@@ -1145,7 +1301,9 @@
       "plugin_guidelink_links",
       "plugin_guidelink_results",
       "plugin_guidelink_alias_sets",
-      "plugin_guidelink_aliases"
+      "plugin_guidelink_aliases",
+      "plugin_guidelink_quarantines",
+      "plugin_guidelink_alerts"
     ],
     "directories": [
       "plugin-data/guidelink"
@@ -1203,6 +1361,26 @@
           "label": "Source Refresh Cron",
           "type": "text",
           "default": "30 2 * * *"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "label": "Native Alerts",
+      "fields": [
+        {
+          "id": "native_alerts_enabled",
+          "label": "Enable Native Alerts",
+          "type": "boolean",
+          "default": true,
+          "helper_text": "Report failures, last-good cache fallback and recovery in m3u-editor notifications and its configured Discord, Slack or Telegram alert channels. Includes preview and scheduled report failures."
+        },
+        {
+          "id": "alert_reminder_hours",
+          "label": "Alert Reminder Hours",
+          "type": "number",
+          "default": 24,
+          "helper_text": "Repeat an unresolved incident only when it is observed again after this interval (1–168 hours). New incidents, severity escalations and recoveries notify immediately."
         }
       ]
     }

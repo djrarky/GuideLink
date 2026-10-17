@@ -13,6 +13,7 @@ use App\Models\Playlist;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Actions\SyncPlaylistAction;
 use AppLocalPlugins\GuideLink\Plugin;
+use AppLocalPlugins\GuideLink\Services\ChannelQuarantineService;
 use AppLocalPlugins\GuideLink\Services\ChannelWriter;
 use AppLocalPlugins\GuideLink\Services\GroupSyncService;
 use AppLocalPlugins\GuideLink\Services\GuideLinkServices;
@@ -193,13 +194,17 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->configure($context, $playlist, [
             'source_mode' => 'scraper_cache', 'max_retries' => 1,
             'scraping_api' => 'scrapedo', 'scraping_api_key' => 'test-secret',
+            'playlist_layout_managed' => true,
         ]);
+        $playlist->forceFill(['auto_sort' => true, 'force_channel_numbering' => true])->saveQuietly();
         Http::fake(['*' => Http::response('Unavailable: token=test-secret', 503)]);
 
         $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
 
         $this->assertFalse($result->success);
         $this->assertFalse((bool) $playlist->refresh()->auto_merge_channels_enabled);
+        $this->assertTrue((bool) $playlist->auto_sort);
+        $this->assertTrue((bool) $playlist->force_channel_numbering);
         $this->assertSame(0, ChannelScrubber::count());
         $this->assertStringNotContainsString('test-secret', json_encode($result->toArray()));
         $this->assertStringNotContainsString('test-secret', $context->run->logs()->get()->toJson());
@@ -218,9 +223,11 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
 
             return (new ChannelWriter)->apply($plan, $context);
         });
-        $writer->shouldNotReceive('disableOtherGroups');
+        $quarantine = \Mockery::mock(ChannelQuarantineService::class)->makePartial();
+        $quarantine->shouldNotReceive('apply');
         $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
         $services->shouldReceive('channelWriter')->andReturn($writer);
+        $services->shouldReceive('channelQuarantine')->andReturn($quarantine);
 
         $result = (new SyncPlaylistAction($services))->handle(['playlist_id' => $playlist->id], $context);
 
@@ -245,9 +252,11 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
 
             return (new ChannelWriter)->apply($plan, $context);
         });
-        $writer->shouldNotReceive('disableOtherGroups');
+        $quarantine = \Mockery::mock(ChannelQuarantineService::class)->makePartial();
+        $quarantine->shouldNotReceive('apply');
         $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
         $services->shouldReceive('channelWriter')->andReturn($writer);
+        $services->shouldReceive('channelQuarantine')->andReturn($quarantine);
 
         $result = (new SyncPlaylistAction($services))->handle(['playlist_id' => $playlist->id], $context);
 
@@ -310,7 +319,8 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
     public function test_native_configuration_failure_rolls_back_before_channel_writes(): void
     {
         [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
-        $channel = $this->configure($context, $playlist);
+        $channel = $this->configure($context, $playlist, ['playlist_layout_managed' => true]);
+        $playlist->forceFill(['auto_sort' => true, 'force_channel_numbering' => true])->saveQuietly();
         $before = $channel->getAttributes();
         $scrubber = \Mockery::mock(ScrubberSetupService::class)->makePartial();
         $scrubber->shouldReceive('apply')->once()->andThrow(new \RuntimeException('Scrubber save failed'));
@@ -324,6 +334,8 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
             $this->assertSame('Scrubber save failed', $exception->getMessage());
         }
         $this->assertFalse((bool) $playlist->refresh()->auto_merge_channels_enabled);
+        $this->assertTrue((bool) $playlist->auto_sort);
+        $this->assertTrue((bool) $playlist->force_channel_numbering);
         $this->assertSame($before, $channel->refresh()->getAttributes());
     }
 

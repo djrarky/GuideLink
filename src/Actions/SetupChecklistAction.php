@@ -6,6 +6,9 @@ use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
+use AppLocalPlugins\GuideLink\Support\RunCancelled;
+use AppLocalPlugins\GuideLink\Support\RunProgress;
+use AppLocalPlugins\GuideLink\Support\SourceSettings;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 
@@ -19,10 +22,12 @@ class SetupChecklistAction extends GuideLinkAction
         $service = $this->services->setupChecklist();
 
         $context->checkpoint(10, 'Checking GuideLink setup.', log: true);
+        RunProgress::checkCancellation($context);
 
         $rows = $service->rows($context);
         $summary = $service->summary($rows);
         $sourceRefresh = $this->prepareSourceCaches($payload, $context);
+        RunProgress::checkCancellation($context);
 
         if (($sourceRefresh['attempted'] ?? 0) > 0) {
             $context->checkpoint(55, 'Rechecking setup after source cache preparation.');
@@ -38,6 +43,7 @@ class SetupChecklistAction extends GuideLinkAction
         }
 
         $context->checkpoint(75, 'Saving setup checklist results.');
+        RunProgress::checkCancellation($context);
 
         $runResults = null;
         $playlistId = $this->resultPlaylistId($context);
@@ -83,8 +89,10 @@ class SetupChecklistAction extends GuideLinkAction
 
         $cache = $this->services->sourceCache();
         $refresh = $this->services->sourceRefresh(cache: $cache);
+        $outcomes = [];
 
         foreach ($this->services->profileRepository()->sourceRefreshPayloads($payload, $context) as $profilePayload) {
+            RunProgress::checkCancellation($context);
             $config = $cache->config($profilePayload, []);
             if ($cache->isFresh($config)) {
                 continue;
@@ -101,7 +109,21 @@ class SetupChecklistAction extends GuideLinkAction
 
             try {
                 $context->checkpoint(25, 'Preparing source cache for setup.', $profile, log: true);
-                $result = $refresh->refresh([...$profilePayload, 'force_refresh' => false], $context);
+                RunProgress::checkCancellation($context);
+                $key = hash('sha256', json_encode(SourceSettings::profileCache($profilePayload), JSON_THROW_ON_ERROR));
+                if (! array_key_exists($key, $outcomes)) {
+                    try {
+                        $outcomes[$key] = $refresh->refresh([...$profilePayload, 'force_refresh' => false], $context);
+                    } catch (RunCancelled $exception) {
+                        throw $exception;
+                    } catch (Throwable $exception) {
+                        $outcomes[$key] = $exception;
+                    }
+                }
+                if ($outcomes[$key] instanceof Throwable) {
+                    throw $outcomes[$key];
+                }
+                $result = $outcomes[$key];
                 $source = is_array($result['summary']['source'] ?? null) ? $result['summary']['source'] : [];
                 $fromCache = (bool) ($source['from_cache'] ?? false);
 
@@ -113,6 +135,8 @@ class SetupChecklistAction extends GuideLinkAction
                     'last_good_cache_path' => $source['last_good_cache_path'] ?? null,
                     'stale_fallback' => (bool) ($source['stale_fallback'] ?? false),
                 ];
+            } catch (RunCancelled $exception) {
+                throw $exception;
             } catch (Throwable $exception) {
                 $summary['failed']++;
                 $summary['profiles'][] = [

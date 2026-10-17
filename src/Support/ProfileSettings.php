@@ -42,13 +42,15 @@ final class ProfileSettings
             'source_mode' => strtolower(self::stringDefault($payload, 'source_mode')),
             'source_playlist_id' => Options::nullableInt($payload['source_playlist_id'] ?? null),
             'alias_set_ids' => $payload['alias_set_ids'] ?? [],
+            'logo_source' => self::logoSource($payload),
+            ...self::playlistLayout($payload),
             ...self::boolSettings($payload, self::REPORT_BOOL_KEYS),
             'repair_mode' => self::stringDefault($payload, 'repair_mode'),
             'include_group_prefixes' => Options::list($payload, [], 'include_group_prefixes', ProfileDefaults::list('include_group_prefixes')),
-            'exclude_group_regex' => Options::list($payload, [], 'exclude_group_regex', ProfileDefaults::list('exclude_group_regex')),
+            'exclude_group_regex' => Options::patterns($payload, [], 'exclude_group_regex', ProfileDefaults::list('exclude_group_regex')),
             'preserve_groups' => Options::list($payload, [], 'preserve_groups', ProfileDefaults::list('preserve_groups')),
-            'preserve_group_name_regex' => Options::list($payload, [], 'preserve_group_name_regex', ProfileDefaults::list('preserve_group_name_regex')),
-            'preserve_channel_title_regex' => Options::list($payload, [], 'preserve_channel_title_regex', ProfileDefaults::list('preserve_channel_title_regex')),
+            'preserve_group_name_regex' => Options::patterns($payload, [], 'preserve_group_name_regex', ProfileDefaults::list('preserve_group_name_regex')),
+            'preserve_channel_title_regex' => Options::patterns($payload, [], 'preserve_channel_title_regex', ProfileDefaults::list('preserve_channel_title_regex')),
             'auto_merge_preferred_playlist_id' => Options::nullableInt($payload['auto_merge_preferred_playlist_id'] ?? null),
             'scrubber_id' => Options::nullableInt($payload['scrubber_id'] ?? null),
             'auto_merge_failover_playlist_ids' => Options::list($payload, [], 'auto_merge_failover_playlist_ids', ProfileDefaults::list('auto_merge_failover_playlist_ids')),
@@ -118,5 +120,28 @@ final class ProfileSettings
         $value = Options::string($payload, [], $key, ProfileDefaults::string($key));
 
         return $value !== '' ? $value : ProfileDefaults::string($key);
+    }
+
+    public static function logoSource(array $payload): string
+    {
+        $value = self::stringDefault($payload, 'logo_source');
+
+        return in_array($value, ['preserve', 'epg', 'channel'], true) ? $value : 'preserve';
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, bool|string>
+     */
+    public static function playlistLayout(array $payload): array
+    {
+        $order = self::stringDefault($payload, 'playlist_output_order');
+        $missing = self::stringDefault($payload, 'playlist_missing_numbers');
+
+        return [
+            'playlist_layout_managed' => Options::bool($payload, [], 'playlist_layout_managed', ProfileDefaults::bool('playlist_layout_managed')),
+            'playlist_output_order' => in_array($order, ['number', 'group'], true) ? $order : ProfileDefaults::string('playlist_output_order'),
+            'playlist_missing_numbers' => in_array($missing, ['preserve', 'enabled', 'disabled'], true) ? $missing : ProfileDefaults::string('playlist_missing_numbers'),
+        ];
     }
 }

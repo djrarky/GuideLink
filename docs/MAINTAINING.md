@@ -168,8 +168,72 @@ cd ../podman
   /var/www/html/plugins/guidelink/tests
 ```
 
-Latest workspace run on 2026-10-12: the Podman validator passed and the full
-container suite passed with 88 tests and 553 assertions in the existing test image. Rebuild the image whenever the m3u-editor reference checkout changes
+Latest workspace run on 2026-10-17: the full plugin suite passed with 193 tests
+and 1,186 assertions under PHP 8.4, using the m3u-editor reference commit
+`aa550eeae5a0b1f0907907a63abe1c566025a978` and an isolated SQLite test database.
+Regression coverage includes native import cleanup and auto-merge, repeated sync,
+legacy group restoration, disabled backups, quarantine (including availability
+repair), native logo fallback, opt-in playlist layout management, native channel
+import and generated M3U ordering/numbering, layout conflict reports and native
+configuration rollback, single playlist-update dispatch, source group
+deduplication, group preservation and avoiding unused failover queries during
+sync. Availability regression tests cover uncertain coverage, custom alias
+thresholds, partial repair cancellation, quarantine and failover changes between
+planning and apply. Result persistence tests cover batch boundaries and rollback
+after a later batch fails. Insert buffers are limited to 250 records; historical
+scrubber channel IDs are deduplicated in SQL. Write safety tests cover exact
+numeric-looking stream IDs, stale metadata plans, already-applied and partially
+applied plans, playlist moves, cancellation before save, duplicate group create
+plans and distinct confirmed/review source counts.
+
+Further regression coverage includes:
+
+- Cancellation before actions, during source fetch/matching/coverage, and after
+  write checkpoints; cancellation never triggers a retry or stale-cache success.
+- Provider identity and target-group changes between planning and writing,
+  quarantine generation/replay safety, and restoring recorded merge preferences
+  on purge without enabling channels.
+- Invalid scope regexes, comma-containing quantifiers, exact managed-category
+  scope, and disabling all group management through the profile setting.
+- Duplicate guide records and conflicting number labels, source deduplication
+  with explicit priority, malformed caches, and fingerprint identity conflicts.
+- Shared refresh deduplication, independent batch failures, retained partial
+  results, cached reads without credentials, permanent HTTP failures without
+  retries, and transient HTTP recovery.
+- Unique failover counts by channel ID, including identical titles and shared
+  references; invalid fallback ownership/type cannot establish coverage.
+- Standalone native setup preserving intervening configuration changes, and
+  repair failures retaining successful repairs and per-channel error details.
+- Native alert delivery with fakes: persisted suppression, reminder intervals,
+  source fallback/escalation/recovery, failed-write recovery, partial batches,
+  preview/apply isolation, cancellation, recipient permissions, host success
+  suppression, delivery failure isolation and schema reapplication/purge.
+  Neither these tests nor the upgrade smoke check send real external alerts.
+- Cache minimums applying to every reader, copied/future-dated/corrupt caches,
+  overlapping refresh publication, failed-write temporary cleanup and avoiding
+  immediate retries after HTTP 429.
+- Setup-check cancellation and failed-fetch deduplication, automatic availability
+  opt-outs, deletion of a selected scrubber between planning and apply, and
+  consistent alert identities for single assigned-playlist and manual runs.
+  Empty automatic selections skip quietly instead of raising failure alerts.
+
+These are deterministic local regressions; concurrent workers on a production
+database have not been load tested. A read-only live audit on 2026-10-17 checked
+3,202 channels and 339 guide mappings: 681 confirmed matches, 16 review matches,
+1,497 unmatched and 1,008 excluded. It proposed zero metadata, group or quarantine
+changes. Audit code was staged temporarily and removed; no installed plugin,
+playlist, channel or cache data was changed. A separate fresh-fetch check was
+blocked by scrape.do's exhausted monthly quota (HTTP 401); the existing 297-row
+source cache remained readable. Fresh parser behavior is fixture-tested, not
+verified against a successful live fetch during this audit.
+
+Standalone validation, PHP lint (109 files), Pint, and all nine
+packaging/release-note tests passed. The packaged 0.1.0-to-0.1.1 upgrade
+passed host install review, trust, schema creation, integrity verification,
+registry diagnostics, and health checks while preserving profile settings and
+playlist assignments. Install testing used the host's fake scanner in an isolated
+local environment; it was not a malware scan.
+Rebuild the image whenever the m3u-editor reference checkout changes
 migrations or native model schema; a stale image can fail with missing host
 columns even when the working tree contains the migrations.
 
@@ -338,7 +402,7 @@ Python 3 is required only for packaging, not for running the plugin.
 ```bash
 python3 -m unittest discover -s tests/release -v
 python3 scripts/package-release.py
-cd dist/v0.1.0
+cd dist/v0.1.1
 sha256sum -c SHA256SUMS
 ```
 

@@ -21,7 +21,7 @@ abstract class AbstractChannelSource implements ChannelSource
         ?ChannelPostProcessor $postProcessor = null,
     ) {
         $this->names = $names ?? new ChannelNameExtractor($this->html);
-        $this->postProcessor = $postProcessor ?? new ChannelPostProcessor($this->html);
+        $this->postProcessor = $postProcessor ?? new ChannelPostProcessor($this->html, $this->countryRules);
     }
 
     public function definition(): array

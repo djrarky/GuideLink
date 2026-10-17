@@ -4,7 +4,9 @@ namespace AppLocalPlugins\GuideLink\Services;
 
 use App\Models\Channel;
 use App\Models\Playlist;
+use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
+use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Database\Eloquent\Collection;
 
 class AvailabilityAnalyzer
@@ -83,16 +85,27 @@ class AvailabilityAnalyzer
         array $scrubberChannelIds,
         array $thresholds,
         array $rules,
+        ?PluginExecutionContext $context = null,
     ): array {
-        $matchesBySourceNumber = $this->matchesBySourceNumber($sourceEntries, $channels, $thresholds, $rules);
+        $matchesBySourceNumber = $this->matchesBySourceNumber($sourceEntries, $channels, $thresholds, $rules, $context);
         $rows = [];
 
         foreach ($sourceEntries as $source) {
             $sourceNumber = (int) $source['number'];
             $matches = $matchesBySourceNumber[$sourceNumber] ?? [];
-            $coverage = $this->coverageStats($matches, $scrubberChannelIds);
-            $status = $matches === [] ? 'no_iptv_match' : $this->sourceCoverageStatus($coverage);
-            $bestMatch = $matches[0] ?? null;
+            $confirmed = [];
+            $review = [];
+            foreach ($matches as $match) {
+                if (in_array($match['decision'], ['auto_apply', 'fingerprint'], true)) {
+                    $confirmed[] = $match;
+                } else {
+                    $review[] = $match;
+                }
+            }
+            $coverage = $this->coverageStats($confirmed, $scrubberChannelIds);
+            $status = $confirmed !== [] ? $this->sourceCoverageStatus($coverage)
+                : ($review !== [] ? 'needs_review' : 'no_iptv_match');
+            $bestMatch = $confirmed[0] ?? $review[0] ?? null;
 
             $rows[] = [
                 'target_playlist_id' => (int) $targetPlaylist->id,
@@ -103,12 +116,15 @@ class AvailabilityAnalyzer
                 'source_stream_id' => $source['stream_id'] ?? '',
                 'status' => $status,
                 'recommendation' => $this->sourceCoverageRecommendation($status),
-                'matched_channel_ids' => $this->joinedChannelField($matches, 'id'),
-                'matched_channel_titles' => $this->joinedChannelField($matches, 'title'),
+                'matched_channel_ids' => $this->joinedChannelField($confirmed, 'id'),
+                'matched_channel_titles' => $this->joinedChannelField($confirmed, 'title'),
+                'review_channel_ids' => $this->joinedChannelField($review, 'id'),
+                'review_channel_titles' => $this->joinedChannelField($review, 'title'),
+                'review_matches' => count($review),
                 'enabled_matches' => $coverage['enabled'],
                 'disabled_matches' => $coverage['disabled'],
                 'scrubber_matches' => $coverage['scrubber'],
-                'enabled_failovers' => count($coverage['failover_titles']),
+                'enabled_failovers' => count($coverage['failover_ids']),
                 'failover_titles' => implode(' | ', $coverage['failover_titles']),
                 'best_score' => $bestMatch['score'] ?? '',
                 'best_decision' => $bestMatch['decision'] ?? '',
@@ -139,6 +155,7 @@ class AvailabilityAnalyzer
             'scrubber_disabled_no_fallback' => $statusCounts['scrubber_disabled_no_fallback'] ?? 0,
             'disabled_only_no_fallback' => $statusCounts['disabled_only_no_fallback'] ?? 0,
             'no_iptv_match' => $statusCounts['no_iptv_match'] ?? 0,
+            'needs_review' => $statusCounts['needs_review'] ?? 0,
             'coverage_percent' => $sourceTotal > 0 ? round(($enabled / $sourceTotal) * 100, 2) : 0.0,
         ];
     }
@@ -167,12 +184,16 @@ class AvailabilityAnalyzer
      * @param  array<string, mixed>  $rules
      * @return array<int, array<int, array{channel: Channel, decision: string, score: int, matched_on: string}>>
      */
-    private function matchesBySourceNumber(array $sourceEntries, Collection $channels, array $thresholds, array $rules): array
+    private function matchesBySourceNumber(array $sourceEntries, Collection $channels, array $thresholds, array $rules, ?PluginExecutionContext $context): array
     {
-        $sourceIndex = $this->matcher->sourceIndex($sourceEntries, $rules);
+        $sourceIndex = $this->matcher->sourceIndex($sourceEntries, $rules, $thresholds);
         $matches = [];
 
-        foreach ($channels as $channel) {
+        foreach ($channels as $position => $channel) {
+            if (RunProgress::shouldHeartbeat($position, $channels->count())) {
+                $context?->heartbeat('Checking source coverage: '.($position + 1).' of '.$channels->count().' channels.');
+                RunProgress::checkCancellation($context);
+            }
             $result = $this->matcher->match($channel, $sourceIndex, $thresholds);
             $source = $result['source'];
             if (! is_array($source) || ! isset($source['number'])) {
@@ -206,7 +227,7 @@ class AvailabilityAnalyzer
     {
         return match (true) {
             $coverage['enabled'] > 0 => 'enabled_coverage',
-            $coverage['failover_titles'] !== [] => 'disabled_only_with_enabled_fallback',
+            $coverage['failover_ids'] !== [] => 'disabled_only_with_enabled_fallback',
             $coverage['scrubber'] > 0 => 'scrubber_disabled_no_fallback',
             default => 'disabled_only_no_fallback',
         };
@@ -219,6 +240,7 @@ class AvailabilityAnalyzer
             'disabled_only_with_enabled_fallback' => 'review_disabled_primary',
             'scrubber_disabled_no_fallback' => 'review_scrubber_disablement',
             'disabled_only_no_fallback' => 'review_disabled_channel',
+            'needs_review' => 'review_mapping',
             default => 'add_or_map_channel',
         };
     }
@@ -226,7 +248,7 @@ class AvailabilityAnalyzer
     /**
      * @param  array<int, array{channel: Channel, decision: string, score: int, matched_on: string}>  $matches
      * @param  array<int, true>  $scrubberChannelIds
-     * @return array{enabled: int, disabled: int, scrubber: int, failover_titles: array<int, string>}
+     * @return array{enabled: int, disabled: int, scrubber: int, failover_titles: array<int, string>, failover_ids: array<int, int>}
      */
     private function coverageStats(array $matches, array $scrubberChannelIds): array
     {
@@ -235,6 +257,7 @@ class AvailabilityAnalyzer
             'disabled' => 0,
             'scrubber' => 0,
             'failover_titles' => [],
+            'failover_ids' => [],
         ];
         $failoverTitles = [];
 
@@ -243,11 +266,16 @@ class AvailabilityAnalyzer
             $coverage[$channel->enabled ? 'enabled' : 'disabled']++;
             $coverage['scrubber'] += isset($scrubberChannelIds[(int) $channel->id]) ? 1 : 0;
 
-            foreach ($this->channels->failoverSummary($channel)['enabled_titles'] as $title) {
+            $failovers = $this->channels->failoverSummary($channel);
+            foreach ($failovers['enabled_ids'] as $id) {
+                $coverage['failover_ids'][$id] = $id;
+            }
+            foreach ($failovers['enabled_titles'] as $title) {
                 $failoverTitles[$title] = $title;
             }
         }
 
+        $coverage['failover_ids'] = array_values($coverage['failover_ids']);
         $coverage['failover_titles'] = array_values($failoverTitles);
 
         return $coverage;

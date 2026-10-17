@@ -5,15 +5,18 @@ namespace AppLocalPlugins\GuideLink\Services;
 use App\Models\Playlist;
 use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
+use AppLocalPlugins\GuideLink\Support\PlaylistOperationFailed;
+use AppLocalPlugins\GuideLink\Support\RunCancelled;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
+use AppLocalPlugins\GuideLink\Support\SourceRefreshFailed;
 use Throwable;
 
 class PlaylistBatchRunner
 {
     /**
      * Resolve target playlist runs and use native PluginActionResult batch shape
-     * for multi-playlist invocations while preserving direct exceptions for a
-     * single playlist action.
+     * for multi-playlist invocations while retaining playlist identity in
+     * exceptions from a single playlist action.
      *
      * @param  array<string, mixed>  $payload
      * @param  callable(array<string, mixed>): PluginActionResult  $handler
@@ -27,12 +30,23 @@ class PlaylistBatchRunner
         ?PlaylistResolver $playlistResolver = null,
     ): PluginActionResult {
         $runs = (new PlaylistRunResolver($playlistResolver ?? new PlaylistResolver))->runs($payload, $context, $purpose);
+        if ($runs === []) {
+            return PluginActionResult::success('No enabled playlist assignments are selected for this action.', [
+                'skipped' => true, 'playlist_runs' => [], 'progress' => 100,
+            ]);
+        }
 
         if (count($runs) > 1) {
             return $this->run($runs, $context, $label, $handler);
         }
 
-        return $handler($runs[0]['payload']);
+        try {
+            return $handler($runs[0]['payload']);
+        } catch (RunCancelled $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new PlaylistOperationFailed((int) $runs[0]['playlist']->id, $exception);
+        }
     }
 
     /**
@@ -62,7 +76,10 @@ class PlaylistBatchRunner
             ], log: true);
 
             try {
+                RunProgress::checkCancellation($context);
                 $result = $handler($run['payload']);
+            } catch (RunCancelled $exception) {
+                $result = PluginActionResult::cancelled($exception->getMessage());
             } catch (Throwable $exception) {
                 $context->error("{$label}: playlist failed.", [
                     'playlist_id' => $playlist->id,
@@ -70,7 +87,9 @@ class PlaylistBatchRunner
                     'error' => $exception->getMessage(),
                 ]);
 
-                $result = PluginActionResult::failure($exception->getMessage());
+                $result = PluginActionResult::failure($exception->getMessage(), [
+                    'source_failure' => $exception instanceof SourceRefreshFailed,
+                ]);
             }
 
             $rows[] = $this->row($playlist, $result);

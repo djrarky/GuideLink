@@ -21,8 +21,15 @@ use AppLocalPlugins\GuideLink\Actions\RefreshSourceCacheAction;
 use AppLocalPlugins\GuideLink\Actions\RepairAvailabilityAction;
 use AppLocalPlugins\GuideLink\Actions\SetupChecklistAction;
 use AppLocalPlugins\GuideLink\Actions\SyncPlaylistAction;
+use AppLocalPlugins\GuideLink\Services\ChannelQuarantineService;
+use AppLocalPlugins\GuideLink\Services\NativeAlertService;
+use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Support\DynamicOptionProviders;
 use AppLocalPlugins\GuideLink\Support\Options;
+use AppLocalPlugins\GuideLink\Support\PlaylistOperationFailed;
+use AppLocalPlugins\GuideLink\Support\RunCancelled;
+use AppLocalPlugins\GuideLink\Support\RunProgress;
+use AppLocalPlugins\GuideLink\Support\SourceRefreshFailed;
 use Carbon\CarbonInterface;
 use Cron\CronExpression;
 use Throwable;
@@ -43,8 +50,17 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      */
     public function runAction(string $action, array $payload, PluginExecutionContext $context): PluginActionResult
     {
+        $result = $this->executeAction($action, $payload, $context);
+        (new NativeAlertService)->recordResult($action, $payload, $result, $context);
+
+        return $result;
+    }
+
+    private function executeAction(string $action, array $payload, PluginExecutionContext $context): PluginActionResult
+    {
         try {
-            return match ($action) {
+            RunProgress::checkCancellation($context);
+            $result = match ($action) {
                 'preview_alias_set' => (new PreviewAliasSetAction)->handle($payload, $context),
                 'health_check' => (new HealthCheckAction)->handle($payload, $context),
                 'setup_checklist' => (new SetupChecklistAction)->handle($payload, $context),
@@ -59,13 +75,23 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                 'refresh_source_cache' => (new RefreshSourceCacheAction)->handle($payload, $context),
                 default => PluginActionResult::failure("Unsupported action [{$action}]"),
             };
+
+            return $context->cancellationRequested() && $result->status !== 'cancelled'
+                ? PluginActionResult::cancelled('GuideLink run cancelled; completed changes and results have been retained.', $result->data)
+                : $result;
+        } catch (RunCancelled $exception) {
+            return PluginActionResult::cancelled($exception->getMessage());
         } catch (Throwable $exception) {
             $context->error('Plugin action failed.', [
                 'action' => $action,
                 'error' => $exception->getMessage(),
             ]);
 
-            return PluginActionResult::failure($exception->getMessage());
+            return PluginActionResult::failure($exception->getMessage(), [
+                'playlist_id' => $exception instanceof PlaylistOperationFailed ? $exception->playlistId : null,
+                'source_failure' => $exception instanceof SourceRefreshFailed
+                    || ($exception instanceof PlaylistOperationFailed && $exception->sourceFailure),
+            ]);
         }
     }
 
@@ -84,7 +110,16 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
      */
     public function runHook(string $hook, array $payload, PluginExecutionContext $context): PluginActionResult
     {
+        $result = $this->executeHook($hook, $payload, $context);
+        (new NativeAlertService)->recordResult($hook, $payload, $result, $context);
+
+        return $result;
+    }
+
+    private function executeHook(string $hook, array $payload, PluginExecutionContext $context): PluginActionResult
+    {
         try {
+            RunProgress::checkCancellation($context);
             if ($hook !== 'playlist.synced') {
                 return PluginActionResult::success("Hook [{$hook}] received but no work is configured.", [
                     'hook' => $hook,
@@ -99,6 +134,14 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                 return PluginActionResult::success('Playlist sync hook skipped.', [
                     'hook' => $hook,
                     'skipped' => true,
+                ]);
+            }
+
+            if (! (new ProfileRepository)->allowsAvailabilityHook((int) $payload['playlist_id'], $context)) {
+                $context->info('Playlist sync hook skipped because automatic availability is not enabled for this assignment.');
+
+                return PluginActionResult::success('Playlist sync hook skipped.', [
+                    'hook' => $hook, 'playlist_id' => $payload['playlist_id'], 'skipped' => true,
                 ]);
             }
 
@@ -122,13 +165,17 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
                     'skipped' => true,
                 ]);
             }
+        } catch (RunCancelled $exception) {
+            return PluginActionResult::cancelled($exception->getMessage());
         } catch (Throwable $exception) {
             $context->error('Plugin hook failed.', [
                 'hook' => $hook,
                 'error' => $exception->getMessage(),
             ]);
 
-            return PluginActionResult::failure($exception->getMessage());
+            return PluginActionResult::failure($exception->getMessage(), [
+                'playlist_id' => $exception instanceof PlaylistOperationFailed ? $exception->playlistId : null,
+            ]);
         }
     }
 
@@ -192,7 +239,12 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
             && (new CronExpression($cron))->isDue($now);
     }
 
-    public function uninstall(PluginUninstallContext $context): void {}
+    public function uninstall(PluginUninstallContext $context): void
+    {
+        if ($context->shouldPurge()) {
+            (new ChannelQuarantineService)->releaseForPurge((int) $context->plugin->id);
+        }
+    }
 
     private static function registerAutoloader(): void
     {

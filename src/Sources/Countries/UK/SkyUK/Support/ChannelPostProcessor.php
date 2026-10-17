@@ -2,6 +2,7 @@
 
 namespace AppLocalPlugins\GuideLink\Sources\Countries\UK\SkyUK\Support;
 
+use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use DOMDocument;
 use DOMElement;
 
@@ -11,7 +12,10 @@ use DOMElement;
  */
 class ChannelPostProcessor
 {
-    public function __construct(private readonly HtmlTable $html) {}
+    public function __construct(
+        private readonly HtmlTable $html,
+        private readonly CountryRulesRepository $countries = new CountryRulesRepository,
+    ) {}
 
     /**
      * @param  array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id: string, guide_valid: bool}>  $parsed
@@ -48,18 +52,25 @@ class ChannelPostProcessor
     private function dedupeByNumber(array $parsed): array
     {
         $byNumber = [];
+        $priorities = [];
+        $rules = $this->countries->resolve(['country' => 'uk'], []);
         foreach ($parsed as $entry) {
             $number = (int) $entry['number'];
             $priority = (int) ($entry['_source_priority'] ?? 1);
-            $existingPriority = (int) ($byNumber[$number]['_source_priority'] ?? 1);
-            if (! isset($byNumber[$number]) || $priority > $existingPriority) {
+            $priorities[$number] = max($priority, $priorities[$number] ?? $priority);
+        }
+        foreach ($parsed as $entry) {
+            $number = (int) $entry['number'];
+            if ((int) ($entry['_source_priority'] ?? 1) !== $priorities[$number]) {
+                continue;
+            }
+            if (! isset($byNumber[$number])) {
                 $byNumber[$number] = $entry;
 
                 continue;
             }
-
-            if ($priority < $existingPriority) {
-                continue;
+            if ($this->countries->lookupKey($entry['name'], $rules) !== $this->countries->lookupKey($byNumber[$number]['name'], $rules)) {
+                throw new \RuntimeException("Source contains conflicting services at channel number [{$number}]. Refusing to combine their identities.");
             }
 
             if (strcasecmp($entry['name'], $byNumber[$number]['name']) !== 0) {

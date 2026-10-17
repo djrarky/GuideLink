@@ -198,7 +198,14 @@ class CountryRulesRepository
     public function matchesAny(string $value, array $patterns): bool
     {
         foreach ($patterns as $pattern) {
-            if ($pattern !== '' && @preg_match($this->regex($pattern, 'iu'), $value) === 1) {
+            if ($pattern === '') {
+                continue;
+            }
+            $matched = @preg_match($this->regex($pattern, 'iu'), $value);
+            if ($matched === false) {
+                throw new \RuntimeException('A scope regex could not be evaluated: '.preg_last_error_msg());
+            }
+            if ($matched === 1) {
                 return true;
             }
         }

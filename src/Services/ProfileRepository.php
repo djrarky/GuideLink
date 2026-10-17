@@ -16,6 +16,21 @@ class ProfileRepository
 
     public const ASSIGNMENTS_TABLE = 'plugin_guidelink_links';
 
+    public function allowsAvailabilityHook(int $playlistId, PluginExecutionContext $context): bool
+    {
+        $this->assertTables();
+        $assignment = DB::table(self::ASSIGNMENTS_TABLE.' as link')
+            ->join(self::PROFILES_TABLE.' as profile', 'profile.id', '=', 'link.extension_plugin_profile_id')
+            ->where('link.extension_plugin_id', $context->plugin->id)
+            ->where('profile.extension_plugin_id', $context->plugin->id)
+            ->where('link.playlist_id', $playlistId)
+            ->where('link.enabled', true)->where('profile.enabled', true)
+            ->first(['link.settings']);
+
+        return $assignment !== null
+            && Options::bool(Options::decodedArray($assignment->settings), [], 'run_availability', true);
+    }
+
     /**
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>

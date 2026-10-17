@@ -11,6 +11,7 @@ use AppLocalPlugins\GuideLink\Support\BuildsSetupReports;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 use AppLocalPlugins\GuideLink\Support\ProfileSettings;
+use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -168,10 +169,12 @@ class AutoMergeSetupService
     }
 
     /**
+     * When deferring, the caller owns the transaction and saves the staged attributes.
+     *
      * @param  array<string, mixed>  $desired
      * @return array<string, mixed>
      */
-    public function apply(Playlist $playlist, array $desired, bool $dryRun): array
+    public function apply(Playlist $playlist, array $desired, bool $dryRun, bool $deferSave = false): array
     {
         $before = $this->nativeState($playlist);
         $config = $this->targetNativeConfig(is_array($playlist->auto_merge_config) ? $playlist->auto_merge_config : [], $desired);
@@ -183,8 +186,11 @@ class AutoMergeSetupService
         $changes = $this->changedFields($before, $after);
 
         if (! $dryRun && $changes !== []) {
-            $playlist->forceFill($after)->save();
-            $playlist->refresh();
+            $playlist->forceFill($after);
+            if (! $deferSave) {
+                $playlist->save();
+                $playlist->refresh();
+            }
         }
 
         return $this->row(
@@ -238,6 +244,7 @@ class AutoMergeSetupService
         ]);
 
         // MergeChannels owns native failover rows; GuideLink only invokes it and records before/after totals.
+        RunProgress::checkCancellation($context);
         Channel::withoutEvents(fn (): mixed => $job->handle());
 
         $after = $this->failoverSnapshot($this->freshPlaylist($playlist));

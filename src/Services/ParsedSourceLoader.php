@@ -156,8 +156,11 @@ class ParsedSourceLoader
             ->orderBy('channel')
             ->orderBy('sort')
             ->orderBy('name')
+            ->orderBy('id')
             ->get();
 
+        $countries = new CountryRulesRepository;
+        $rules = $countries->resolve($payload, []);
         $entries = [];
         $duplicateNumbers = 0;
         $missingNumbers = 0;
@@ -165,13 +168,19 @@ class ParsedSourceLoader
 
         foreach ($channels as $channel) {
             $number = Options::nullableInt($channel->channel);
-            if ($number === null) {
+            if ($number === null || $number <= 0 || (float) $channel->channel !== (float) $number) {
                 $missingNumbers++;
 
                 continue;
             }
 
             if (isset($entries[$number])) {
+                if ($countries->lookupKey($entries[$number]['name'], $rules) !== $countries->lookupKey(ChannelAttributes::title($channel), $rules)) {
+                    throw new \RuntimeException("Native source playlist has conflicting channels at number [{$number}]. Resolve the duplicate number before syncing.");
+                }
+                $entries[$number]['aliases'] = array_values(array_unique([
+                    ...$entries[$number]['aliases'], ChannelAttributes::title($channel), ...$this->aliases($channel),
+                ]));
                 $duplicateNumbers++;
 
                 continue;
@@ -191,7 +200,7 @@ class ParsedSourceLoader
         }
 
         if ($missingNumbers > 0 || $duplicateNumbers > 0) {
-            $context->warning('Native source playlist skipped channels that cannot be represented as canonical rows.', [
+            $context->warning('Native source playlist omitted invalid numbers and combined equivalent duplicates.', [
                 'source_playlist_id' => (int) $playlist->id,
                 'missing_channel_numbers' => $missingNumbers,
                 'duplicate_channel_numbers' => $duplicateNumbers,

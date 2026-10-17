@@ -66,14 +66,14 @@ class Options
      * @param  array<int, string>  $default
      * @return array<int, string>
      */
-    public static function list(array $payload, array $settings, string $key, array $default = []): array
+    public static function list(array $payload, array $settings, string $key, array $default = [], string $separator = '/[\r\n,]+/'): array
     {
         $value = $payload[$key] ?? $settings[$key] ?? $default;
 
         if (is_array($value)) {
             $items = $value;
         } elseif (is_string($value)) {
-            $items = preg_split('/[\r\n,]+/', $value) ?: [];
+            $items = preg_split($separator, $value) ?: [];
         } else {
             $items = $default;
         }
@@ -82,6 +82,12 @@ class Options
             fn (mixed $item): string => trim((string) $item),
             $items,
         ), fn (string $item): bool => $item !== ''));
+    }
+
+    /** Regex lists use newlines; commas can be part of a quantifier or literal. */
+    public static function patterns(array $payload, array $settings, string $key, array $default = []): array
+    {
+        return self::list($payload, $settings, $key, $default, '/[\r\n]+/');
     }
 
     public static function nullableInt(mixed $value): ?int

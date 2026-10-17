@@ -4,6 +4,8 @@ namespace AppLocalPlugins\GuideLink\Tests\Feature\Persistence;
 
 require_once dirname(__DIR__).'/PluginFeatureTestCase.php';
 
+use AppLocalPlugins\GuideLink\Actions\RefreshSourceCacheAction;
+use AppLocalPlugins\GuideLink\Scrapers\Backends\DirectHttpScraper;
 use AppLocalPlugins\GuideLink\Scrapers\Contracts\ScraperClient;
 use AppLocalPlugins\GuideLink\Scrapers\ScraperRegistry;
 use AppLocalPlugins\GuideLink\Services\SourceCacheService;
@@ -12,6 +14,7 @@ use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Support\ProfileSettings;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 
@@ -206,5 +209,75 @@ class SourceCachePersistenceTest extends PluginFeatureTestCase
         $this->assertTrue($result['summary']['source']['stale_fallback']);
         $this->assertStringContainsString('synthetic upstream outage', $result['summary']['source']['refresh_error']);
         $this->assertCount(1, Storage::disk('local')->allFiles('plugin-data/guidelink'));
+    }
+
+    public function test_corrupt_cache_rows_are_rejected_and_invalid_writes_keep_the_last_good_file(): void
+    {
+        Storage::fake('local');
+        $cache = new SourceCacheService;
+        $config = $this->cacheConfig();
+        $valid = ['number' => 101, 'name' => 'BBC One', 'category' => 'Entertainment', 'aliases' => []];
+        $path = $cache->writeLastGood($config, [$valid], []);
+        $contents = Storage::disk('local')->get($path);
+        foreach ([[], [$valid, $valid], [$valid, ['number' => 102]], [[...$valid, 'aliases' => [['bad']]]], [[...$valid, 'number' => 101.5]]] as $entries) {
+            try {
+                $cache->writeLastGood($config, $entries, []);
+                $this->fail('Invalid cache writes must be rejected.');
+            } catch (RuntimeException) {
+                $this->assertSame($contents, Storage::disk('local')->get($path));
+            }
+            Storage::disk('local')->put($path, json_encode(['entries' => $entries]));
+            try {
+                $cache->readLastGood($config);
+                $this->fail('Damaged cache rows must never be silently skipped.');
+            } catch (RuntimeException) {
+                $this->assertTrue(true);
+            }
+            Storage::disk('local')->put($path, $contents);
+        }
+    }
+
+    public function test_fresh_cache_does_not_need_a_scraper_key(): void
+    {
+        Storage::fake('local');
+        Http::preventStrayRequests();
+        [$context] = $this->context();
+        $cache = new SourceCacheService;
+        $config = $this->cacheConfig(['provider_source' => 'viewersvault', 'scraping_api' => 'scrapedo']);
+        $entries = [['number' => 101, 'name' => 'BBC One', 'category' => 'Entertainment', 'aliases' => []]];
+        $cache->writeLastGood($config, $entries, []);
+        $result = (new SourceRefreshService(new CountryRulesRepository, $cache))->refresh($config, $context);
+        $this->assertSame($entries, $result['entries']);
+        $this->assertTrue($result['summary']['source']['from_cache']);
+        $this->assertFalse($result['summary']['source']['stale_fallback']);
+        Http::assertNothingSent();
+    }
+
+    public function test_permanent_http_errors_do_not_retry_or_claim_a_fresh_source(): void
+    {
+        Storage::fake('local');
+        [$context] = $this->context();
+        $cache = new SourceCacheService;
+        $config = $this->cacheConfig(['provider_source' => 'viewersvault', 'scraping_api' => 'scrapedo', 'scraping_api_key' => 'test-secret', 'max_retries' => 3, 'force_refresh' => true]);
+        $entries = [['number' => 101, 'name' => 'BBC One', 'category' => 'Entertainment', 'aliases' => []]];
+        $path = $cache->writeLastGood($config, $entries, []);
+        $before = Storage::disk('local')->get($path);
+        Http::fake(['*' => Http::response(['Message' => 'Monthly request limit exceeded'], 401)]);
+        $result = (new RefreshSourceCacheAction)->handle([...$config, 'profile_sources' => false], $context);
+        $this->assertTrue($result->success);
+        $this->assertTrue($result->data['source']['stale_fallback']);
+        $this->assertStringContainsString('using the last-good cache', $result->summary);
+        $this->assertStringContainsString('after 1 attempt(s)', $result->data['source']['refresh_error']);
+        $this->assertSame($before, Storage::disk('local')->get($path));
+        Http::assertSentCount(1);
+    }
+
+    public function test_transient_http_errors_can_recover_on_retry(): void
+    {
+        [$context] = $this->context();
+        Http::fake(['*' => Http::sequence()->push('temporary failure', 503)->push('recovered content', 200)]);
+        $content = (new SourceCacheService)->fetchFresh(new DirectHttpScraper, $context, $this->cacheConfig(['max_retries' => 3]), 'https://example.invalid/source', 'html');
+        $this->assertSame('recovered content', $content);
+        Http::assertSentCount(2);
     }
 }

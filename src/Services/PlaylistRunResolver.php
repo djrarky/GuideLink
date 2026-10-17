@@ -23,9 +23,6 @@ class PlaylistRunResolver
 
         if (Options::bool($payload, [], 'assigned_playlists', false)) {
             $runs = $this->profiles->assignedRuns($basePayload, $context, $purpose);
-            if ($runs === []) {
-                throw new \RuntimeException('No enabled playlist profile assignments are available for this run.');
-            }
 
             return array_map(
                 fn (array $run): array => $this->withRunMetadata($run['playlist'], $run['payload']),

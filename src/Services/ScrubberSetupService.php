@@ -204,19 +204,20 @@ class ScrubberSetupService
         }
 
         $scrubber = $this->targetScrubber($playlist, $desired);
+        if (($desired['scrubber_id'] ?? null) !== null && ! $scrubber instanceof ChannelScrubber) {
+            throw new \RuntimeException('The selected scrubber is no longer available for this playlist; review the profile and retry.');
+        }
         if (($desired['scrubber_id'] ?? null) !== null && ! $this->isManagedScrubber($scrubber)) {
             return $this->row(
-                $scrubber instanceof ChannelScrubber ? 'validated' : 'warning',
+                'validated',
                 'User-selected native scrubber',
-                $scrubber instanceof ChannelScrubber
-                    ? 'Selected scrubber is user-managed; GuideLink validated it without changing native settings.'
-                    : 'Selected scrubber was not found for this playlist.',
+                'Selected scrubber is user-managed; GuideLink validated it without changing native settings.',
                 [
                     'dry_run' => $dryRun,
                     'playlist_id' => (int) $playlist->id,
                     'selected_scrubber_id' => $desired['scrubber_id'],
                     'management' => 'user_selected',
-                    'current' => $scrubber instanceof ChannelScrubber ? $this->scrubberSnapshot($scrubber) : null,
+                    'current' => $this->scrubberSnapshot($scrubber),
                     'desired' => $this->desiredNativeAttributes($playlist, $desired),
                 ],
             );
@@ -505,7 +506,7 @@ class ScrubberSetupService
      */
     private function targetScrubber(Playlist $playlist, array $desired): ?ChannelScrubber
     {
-        $query = ChannelScrubber::query()->where('playlist_id', $playlist->id);
+        $query = ChannelScrubber::query()->where('playlist_id', $playlist->id)->where('user_id', $playlist->user_id);
         $scrubberId = Options::nullableInt($desired['scrubber_id'] ?? null);
         if ($scrubberId !== null) {
             return $query->where('id', $scrubberId)->first();

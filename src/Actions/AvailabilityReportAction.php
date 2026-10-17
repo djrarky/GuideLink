@@ -75,6 +75,7 @@ class AvailabilityReportAction extends GuideLinkAction
                 $scrubberChannelIds,
                 $matcher->thresholds($payload, []),
                 $rules,
+                $context,
             );
             $summary['source_coverage'] = $analyzer->sourceCoverageSummary($sourceCoverageRows);
         }

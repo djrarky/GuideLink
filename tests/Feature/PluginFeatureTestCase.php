@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Plugins\PluginSchemaManager;
 use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
+use App\Services\AlertService;
 use AppLocalPlugins\GuideLink\Plugin as GuideLinkPlugin;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use Illuminate\Support\Facades\DB;
@@ -25,6 +26,8 @@ abstract class PluginFeatureTestCase extends TestCase
         require_once dirname(__DIR__, 2).'/Plugin.php';
         new GuideLinkPlugin;
         Notification::fake();
+        // Plugin tests must never dispatch to a real host alert channel.
+        $this->mock(AlertService::class)->shouldReceive('isEnabled')->andReturn(false)->byDefault();
     }
 
     /**

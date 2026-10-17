@@ -90,6 +90,6 @@ class ProfileReportingAndScopeTest extends PluginFeatureTestCase
         ], $context);
         $this->assertTrue($restricted->success, $restricted->summary);
         $this->assertSame(0, $restricted->data['matching']['in_scope_channels']);
-        $this->assertSame(['group_prefix' => 2], $restricted->data['matching']['excluded_by_reason']);
+        $this->assertSame(['group_prefix' => 1, 'group_preserved' => 1], $restricted->data['matching']['excluded_by_reason']);
     }
 }
