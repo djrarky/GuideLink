@@ -54,7 +54,7 @@ See [Install](docs/INSTALL.md) for checksum commands and directory/CLI alternati
 Sync uses the saved profile and only writes changes. It configures m3u-editor's
 native auto-merge and scrubber settings without starting a scan or failover rebuild.
 
-Choose **Bundled Defaults** in **Data → Alias Sets** to use the included channel
+Choose **Included alias dataset** in **Data → Alias Sets** to use the included channel
 aliases. These are read-only and update with the plugin. For your own aliases,
 create a custom set and add entries under **Data → Aliases**. Each entry can belong
 to multiple custom sets. Use **Actions → Preview Alias Set** to view a set's aliases.

@@ -35,7 +35,7 @@ class RepairAvailabilityAction extends GuideLinkAction
     {
         $countryRules = $this->services->countryRules();
         $playlistResolver = $this->services->playlistResolver();
-        $channelRepository = $this->services->channelRepository($countryRules);
+        $channelRepository = $this->services->channelRepository();
         $matcher = $this->services->channelMatcher($countryRules);
         $analyzer = $this->services->availabilityAnalyzer($channelRepository, $matcher);
         $runResults = $this->services->runResults();

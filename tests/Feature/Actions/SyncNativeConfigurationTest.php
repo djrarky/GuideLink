@@ -304,7 +304,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $channel = $this->configure($context, $playlist);
         foreach ([2, 1] as $expectedBuilds) {
             $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
-            $plans = \Mockery::mock(WritePlanBuilder::class, [$services->countryRules()])->makePartial();
+            $plans = \Mockery::mock(WritePlanBuilder::class)->makePartial();
             $plans->shouldReceive('rows')->times($expectedBuilds)->passthru();
             $services->shouldReceive('writePlans')->andReturn($plans);
 

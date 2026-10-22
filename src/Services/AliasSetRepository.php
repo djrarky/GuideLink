@@ -8,13 +8,23 @@ use Illuminate\Support\Facades\DB;
 
 final class AliasSetRepository
 {
-    public function rows(int $setId, PluginExecutionContext $context): array
+    public function rows(int|array $setIds, PluginExecutionContext $context, bool $enabledOnly = false): array
     {
+        $setIds = self::setIds(is_int($setIds) ? [$setIds] : $setIds);
+        if ($setIds === []) {
+            return [];
+        }
         $query = DB::table(ProfileAliasResolver::ALIASES)->where('extension_plugin_id', $context->plugin->id)
-            ->where(fn (Builder $query) => $query->whereJsonContains('alias_set_ids', $setId)
-                ->orWhereJsonContains('alias_set_ids', (string) $setId))->orderBy('id');
+            ->where(function (Builder $query) use ($setIds): void {
+                foreach ($setIds as $setId) {
+                    $query->orWhereJsonContains('alias_set_ids', $setId)
+                        ->orWhereJsonContains('alias_set_ids', (string) $setId);
+                }
+            })
+            ->when($enabledOnly, fn (Builder $query) => $query->where('enabled', true))
+            ->orderBy('id');
 
-        return $query->get()->map(fn (object $row): array => [
+        return $query->get(['id', 'alias_set_ids', 'target_stream_id', 'aliases', 'enabled'])->map(fn (object $row): array => [
             'id' => (int) $row->id,
             'alias_set_ids' => self::setIds($row->alias_set_ids),
             'target_stream_id' => $row->target_stream_id,

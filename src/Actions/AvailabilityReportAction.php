@@ -30,7 +30,7 @@ class AvailabilityReportAction extends GuideLinkAction
     {
         $countryRules = $this->services->countryRules();
         $playlistResolver = $this->services->playlistResolver();
-        $channelRepository = $this->services->channelRepository($countryRules);
+        $channelRepository = $this->services->channelRepository();
         $parsedSourceLoader = $this->services->parsedSourceLoader();
         $guideMaps = $this->services->guideMaps();
         $matcher = $this->services->channelMatcher($countryRules);
@@ -55,7 +55,8 @@ class AvailabilityReportAction extends GuideLinkAction
             'scrubber_channels' => count($scrubberChannelIds),
         ]);
 
-        $channelRows = $analyzer->channelRows($playlist, $channels, $scrubberChannelIds);
+        $failoverSummaries = $channelRepository->failoverSummaries($channels);
+        $channelRows = $analyzer->channelRows($playlist, $channels, $scrubberChannelIds, $failoverSummaries);
         $summary = [
             ...$analyzer->summary($playlist, $channelRows),
             'source_coverage' => null,
@@ -76,6 +77,7 @@ class AvailabilityReportAction extends GuideLinkAction
                 $matcher->thresholds($payload, []),
                 $rules,
                 $context,
+                $failoverSummaries,
             );
             $summary['source_coverage'] = $analyzer->sourceCoverageSummary($sourceCoverageRows);
         }

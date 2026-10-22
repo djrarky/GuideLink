@@ -23,7 +23,7 @@ use AppLocalPlugins\GuideLink\Services\ChannelRepository;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
 use AppLocalPlugins\GuideLink\Services\SourceCacheService;
-use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
+use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -92,12 +92,45 @@ class SyncStabilityTest extends PluginFeatureTestCase
         }
         $this->assertSame([], $failoverQueries);
 
-        $repository = new ChannelRepository(new CountryRulesRepository);
+        $repository = new ChannelRepository;
         $channels = $repository->liveChannels($playlist, true);
         $master = $channels->find($primary->id);
         $this->assertTrue($master->relationLoaded('group'));
         $this->assertTrue($master->relationLoaded('failovers'));
         $this->assertSame(['total' => 1, 'enabled' => 0, 'enabled_ids' => [], 'enabled_titles' => []], $repository->failoverSummary($master));
+    }
+
+    public function test_projected_reads_keep_identity_write_guards_and_failover_names_without_large_metadata(): void
+    {
+        [$context, $playlist] = $this->configured();
+        $group = $this->group($playlist, 'Original group');
+        $group->delete();
+        $primary = $this->channel($playlist, [
+            'group_id' => $group->id, 'group_internal' => 'Provider group',
+            'name_custom' => 'Custom name', 'title_custom' => 'Custom title',
+            'stream_id_custom' => 'custom.id', 'sort' => 12.5, 'can_merge' => false,
+            'stream_stats' => ['large' => str_repeat('x', 10000)],
+        ]);
+        $backup = $this->channel($playlist, ['title_custom' => 'Backup title', 'enabled' => true]);
+        ChannelFailover::create(['user_id' => $context->user->id, 'channel_id' => $primary->id, 'channel_failover_id' => $backup->id, 'metadata' => ['large' => str_repeat('x', 10000)]]);
+        $legacy = $this->channel($playlist, ['group_id' => null, 'group_internal' => null, 'group' => 'Legacy group']);
+        $repository = new ChannelRepository;
+        $projected = $repository->liveChannels($playlist, true);
+        foreach ([$primary, $legacy] as $original) {
+            $full = Channel::with(['group' => fn ($query) => $query->withTrashed(), 'failovers.channelFailover'])->findOrFail($original->id);
+            $read = $projected->find($original->id);
+            $this->assertEquals(ChannelAttributes::decisionState($full), ChannelAttributes::decisionState($read));
+            $this->assertEquals(ChannelAttributes::nativeMetadata($full), ChannelAttributes::nativeMetadata($read));
+            $this->assertSame(ChannelAttributes::reportRow($playlist, $full), ChannelAttributes::reportRow($playlist, $read));
+            $this->assertSame($repository->failoverSummary($full), $repository->failoverSummary($read));
+            $this->assertArrayNotHasKey('stream_stats', $read->getAttributes());
+            $this->assertArrayNotHasKey('url', $read->getAttributes());
+        }
+        $read = $projected->find($primary->id);
+        $this->assertSame(['Backup title'], $repository->failoverSummary($read)['enabled_titles']);
+        $this->assertArrayNotHasKey('metadata', $read->failovers->first()->getAttributes());
+        $this->assertArrayNotHasKey('url', $read->failovers->first()->channelFailover->getAttributes());
+        $this->assertSame('Legacy group', ChannelAttributes::groupName($projected->find($legacy->id)));
     }
 
     public function test_upgrade_restores_legacy_groups_and_repairs_disabled_backups_without_enabling_them(): void

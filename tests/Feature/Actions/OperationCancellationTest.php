@@ -106,7 +106,7 @@ class OperationCancellationTest extends PluginFeatureTestCase
         });
         $countries = new CountryRulesRepository;
         $matcher = new ChannelMatcher($countries);
-        $analyzer = new AvailabilityAnalyzer(new ChannelRepository($countries), $matcher);
+        $analyzer = new AvailabilityAnalyzer(new ChannelRepository, $matcher);
         $this->expectException(RunCancelled::class);
         $analyzer->sourceCoverageRows($playlist, [], new Collection([(new Channel)->forceFill(['title' => 'BBC One'])]), [], $matcher->thresholds([], []), $countries->resolve([], []), $context);
     }

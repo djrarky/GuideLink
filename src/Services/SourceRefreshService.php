@@ -47,21 +47,14 @@ class SourceRefreshService
             $request->assertSupported();
             $sourceValidated = true;
 
-            if ($config['force_refresh'] === false && $this->cache->isFresh($config)) {
-                try {
-                    $cached = $this->cache->readLastGood($config);
-                    $context->info('Using fresh parsed source cache.', [
-                        'source_cache_path' => $cached['path'],
-                        'channel_count' => count($cached['entries']),
-                        'fetched_at' => $cached['metadata']['fetched_at'] ?? null,
-                    ]);
+            if (($cached = $this->cache->readFresh($config)) !== null) {
+                $context->info('Using fresh parsed source cache.', [
+                    'source_cache_path' => $cached['path'],
+                    'channel_count' => count($cached['entries']),
+                    'fetched_at' => $cached['metadata']['fetched_at'] ?? null,
+                ]);
 
-                    return $this->cachedResult($cached, staleFallback: false);
-                } catch (Throwable $exception) {
-                    $context->warning('Fresh source cache could not be read; attempting a live refresh.', [
-                        'error' => $exception->getMessage(),
-                    ]);
-                }
+                return $this->cachedResult($cached, staleFallback: false);
             }
 
             $source = $this->sources->provider($request->provider);

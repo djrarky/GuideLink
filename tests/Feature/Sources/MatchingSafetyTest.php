@@ -213,6 +213,32 @@ class MatchingSafetyTest extends PluginFeatureTestCase
         $this->assertStringContainsString('another source channel', $result['review_reason']);
     }
 
+    public function test_guide_fallback_keeps_structured_matches_but_cannot_use_fuzzy_matches(): void
+    {
+        $countries = new CountryRulesRepository;
+        $rules = $countries->resolve([], []);
+        $matcher = new ChannelMatcher($countries);
+        $thresholds = $matcher->thresholds([], []);
+        $source = ['number' => 125, 'name' => 'Discovery Channel', 'category' => '', 'aliases' => [], 'guide_valid' => true];
+        $mainIndex = $matcher->sourceIndex([$source], $rules, $thresholds);
+        $guideIndex = $matcher->sourceIndex([[...$source, 'guide_only' => true]], $rules, $thresholds);
+
+        foreach (['Discovery Channel', 'Discovery Chann'] as $title) {
+            $channel = (new Channel)->forceFill(['title' => $title, 'name' => $title]);
+            $result = $matcher->match($channel, $guideIndex, $thresholds);
+            $this->assertSame('auto_apply', $result['decision'], $title);
+            $this->assertLessThanOrEqual(3, $result['tier']);
+            $this->assertStringStartsWith('guide:', $result['matched_on']);
+        }
+        $channel = (new Channel)->forceFill(['title' => 'Discovry Channel', 'name' => 'Discovry Channel']);
+        $fuzzy = $matcher->match($channel, $mainIndex, $thresholds);
+        $this->assertSame(4, $fuzzy['tier']);
+        $this->assertSame(125, $fuzzy['source']['number']);
+        $fallback = $matcher->match($channel, $guideIndex, $thresholds);
+        $this->assertSame('unmatched', $fallback['decision']);
+        $this->assertNull($fallback['source']);
+    }
+
     private function match(array $attributes, array $aliases = []): array
     {
         $countries = new CountryRulesRepository;

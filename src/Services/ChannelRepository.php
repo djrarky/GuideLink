@@ -7,15 +7,19 @@ use App\Models\ChannelScrubberLogChannel;
 use App\Models\Group;
 use App\Models\Playlist;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
-use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 
+/**
+ * Failover summaries contain distinct, valid backups owned by the same user.
+ * enabled_ids and enabled_titles have corresponding positions. Maps returned
+ * by failoverSummaries() are keyed by primary channel ID, not playlist position.
+ *
+ * @phpstan-type FailoverSummary array{total: int, enabled: int, enabled_ids: list<int>, enabled_titles: list<string>}
+ */
 class ChannelRepository
 {
-    public function __construct(private readonly CountryRulesRepository $countryRules) {}
-
     /**
      * @return Collection<int, Channel>
      */
@@ -24,21 +28,26 @@ class ChannelRepository
         $query = Channel::query()
             ->where('playlist_id', $playlist->id)
             ->where('is_vod', false)
-            ->with(['group' => fn ($query) => $query->withTrashed()])
+            ->with(['group' => fn ($query) => $query->withTrashed()->select(['id', 'name'])])
             ->orderBy('group_internal')
             ->orderBy('channel')
             ->orderBy('name')
             ->orderBy('id');
 
         if ($includeFailovers) {
-            $query->with('failovers.channelFailover');
+            $query->with([
+                'failovers:id,channel_id,channel_failover_id',
+                'failovers.channelFailover' => fn ($query) => $query->select([
+                    'id', 'user_id', 'is_vod', 'enabled', ...ChannelAttributes::NAME_FIELDS,
+                ]),
+            ]);
         }
 
         if (! $includeDisabled) {
             $query->where('enabled', true);
         }
 
-        return $query->get();
+        return $query->get(ChannelAttributes::readColumns());
     }
 
     /**
@@ -61,10 +70,9 @@ class ChannelRepository
     }
 
     /**
-     * @param  array<string, mixed>  $rules
      * @return array<string, Group>
      */
-    public function groupsByName(Playlist $playlist, array $rules): array
+    public function groupsByName(Playlist $playlist): array
     {
         $groups = [];
 
@@ -98,7 +106,18 @@ class ChannelRepository
     }
 
     /**
-     * @return array{total: int, enabled: int, enabled_ids: array<int, int>, enabled_titles: array<int, string>}
+     * @param  Collection<int, Channel>  $channels
+     * @return array<int, FailoverSummary>
+     */
+    public function failoverSummaries(Collection $channels): array
+    {
+        return $channels->mapWithKeys(fn (Channel $channel): array => [
+            (int) $channel->id => $this->failoverSummary($channel),
+        ])->all();
+    }
+
+    /**
+     * @return FailoverSummary
      */
     public function failoverSummary(Channel $channel): array
     {

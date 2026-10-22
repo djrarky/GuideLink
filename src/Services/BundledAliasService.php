@@ -9,7 +9,10 @@ class BundledAliasService
 {
     private const BUNDLE_IDS = ['sky-uk'];
 
-    public function __construct(private readonly string $directory = __DIR__.'/../AliasSets') {}
+    public function __construct(
+        private readonly string $directory = __DIR__.'/../AliasSets',
+        private readonly CountryRulesRepository $countryRules = new CountryRulesRepository,
+    ) {}
 
     public function options(): array
     {
@@ -33,7 +36,7 @@ class BundledAliasService
     /** Check actual guide names against the bundled target identities. */
     public function validateTargets(array $rows, array $guideNames, array $payload): void
     {
-        $countries = new CountryRulesRepository;
+        $countries = $this->countryRules;
         $rules = $countries->resolve($payload, []);
         $keys = fn (array $names): array => array_map(fn (string $name): string => $countries->lookupKey($name, $rules), $names);
         foreach ($rows as $row) {

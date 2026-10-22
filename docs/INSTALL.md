@@ -160,6 +160,21 @@ before sending the signal; do not reuse a PID from a previous deployment. Custom
 web runtimes should use their own graceful reload procedure. Restarting Horizon
 alone does not clear the web workers' OPcache.
 
+### Profile form layout
+
+The current form groups settings into **Profile details**, **Lineup & programme
+guide**, **Channel handling**, and **Backups & stream health**. Technical options
+start collapsed; opening or closing them does not change their values. Existing
+profiles retain their saved settings and the 0.1.2 defaults remain unchanged.
+
+The unmatched-channel option is now **Disable channels without a confirmed
+match**. **Manage playlist layout & imports** controls the same native preferences
+as before, and **Enable newly imported live channels** stays beside the disabling
+policy. Both apply when Run Sync or a scheduled sync applies changes. See the
+[profile form guide](CONFIGURATION.md#profile-form) for the current layout.
+
+The version-specific notes below use the labels from those releases.
+
 ### Upgrading To 0.1.2
 
 Use the reviewed update and worker-reload procedure above. Profiles, assignments,
@@ -281,3 +296,10 @@ inside the m3u-editor container.
 
 If an archive review cannot be trusted, check the configured plugin scan driver
 and ClamAV status on the host.
+
+### Profile form host support
+
+The optional source/checker field visibility and form-loading optimisations are
+implemented in m3u-editor. Install the accompanying host update to enable them.
+GuideLink remains compatible with the earlier host: all fields stay visible, and
+saved profile values and sync behavior are unchanged.

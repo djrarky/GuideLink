@@ -31,7 +31,7 @@ class AvailabilityCoverageTest extends PluginFeatureTestCase
             $this->channel(1, 'GEO TV', true), $this->channel(2, 'BBC One', true), $this->channel(3, 'BBC One HD', false),
         ]), $sources, $matcher->thresholds([], []), $countries->resolve([], []));
 
-        $summary = (new WritePlanBuilder($countries))->summary($playlist, $rows, [], $sources, [
+        $summary = (new WritePlanBuilder)->summary($playlist, $rows, [], $sources, [
             ['decision' => 'excluded', 'exclusion_reason' => 'group_prefix', 'enabled' => true],
             ['decision' => 'excluded', 'exclusion_reason' => 'group_prefix', 'enabled' => false],
             ['decision' => 'excluded', 'exclusion_reason' => 'group_preserved'],
@@ -106,12 +106,48 @@ class AvailabilityCoverageTest extends PluginFeatureTestCase
         $b = $backup(11);
         $primary->setRelation('failovers', new Collection([$reference($a), $reference($a), $reference($backup(12, 2)), $reference($backup(13, 1, true))]));
         $second->setRelation('failovers', new Collection([$reference($a), $reference($b)]));
-        $repository = new ChannelRepository(new CountryRulesRepository);
+        $repository = new ChannelRepository;
         $this->assertSame(1, $repository->failoverSummary($primary)['total']);
         $this->assertSame(1, $repository->failoverSummary($primary)['enabled']);
         [$rows] = $this->coverage([['number' => 125, 'name' => 'Discovery Channel', 'category' => 'Entertainment', 'aliases' => [], 'guide_valid' => true]], [$primary, $second]);
         $this->assertSame(2, $rows[0]['enabled_failovers']);
         $this->assertSame('disabled_only_with_enabled_fallback', $rows[0]['status']);
+    }
+
+    public function test_one_report_shares_failover_summaries_and_later_reports_see_changes(): void
+    {
+        $repository = new class extends ChannelRepository
+        {
+            public int $summaries = 0;
+
+            public function failoverSummary(Channel $channel): array
+            {
+                $this->summaries++;
+
+                return parent::failoverSummary($channel);
+            }
+        };
+        $countries = new CountryRulesRepository;
+        $matcher = new ChannelMatcher($countries);
+        $analyzer = new AvailabilityAnalyzer($repository, $matcher);
+        $playlist = (new Playlist)->forceFill(['id' => 1, 'uuid' => 'test']);
+        $primary = $this->channel(1, 'BBC One', false)->forceFill(['user_id' => 1]);
+        $backup = $this->channel(2, 'Backup', true)->forceFill(['user_id' => 1, 'is_vod' => false]);
+        $primary->setRelation('failovers', new Collection([(new ChannelFailover)->setRelation('channelFailover', $backup)]));
+        $channels = new Collection([$primary]);
+        $sources = [['number' => 101, 'name' => 'BBC One', 'category' => '', 'aliases' => [], 'guide_valid' => true]];
+        foreach ([true, false] as $enabled) {
+            $backup->enabled = $enabled;
+            $summaries = $repository->failoverSummaries($channels);
+            $calls = $repository->summaries;
+            $rows = $analyzer->channelRows($playlist, $channels, [], $summaries);
+            $coverage = $analyzer->sourceCoverageRows($playlist, $sources, $channels, [], $matcher->thresholds([], []), $countries->resolve([], []), failoverSummaries: $summaries);
+            $this->assertSame($calls, $repository->summaries);
+            $this->assertSame((int) $enabled, $rows[0]['failover_enabled']);
+            $this->assertSame((int) $enabled, $coverage[0]['enabled_failovers']);
+            $this->assertSame($enabled ? 'disabled_only_with_enabled_fallback' : 'disabled_only_no_fallback', $coverage[0]['status']);
+        }
+        $this->assertSame(2, $repository->summaries);
     }
 
     private function channel(int $id, string $title, bool $enabled): Channel
@@ -124,7 +160,7 @@ class AvailabilityCoverageTest extends PluginFeatureTestCase
     {
         $countries = new CountryRulesRepository;
         $matcher = new ChannelMatcher($countries);
-        $analyzer = new AvailabilityAnalyzer(new ChannelRepository($countries), $matcher);
+        $analyzer = new AvailabilityAnalyzer(new ChannelRepository, $matcher);
         $rows = $analyzer->sourceCoverageRows(
             (new Playlist)->forceFill(['id' => 1, 'uuid' => 'test']), $sources, new Collection($channels), [],
             $matcher->thresholds($settings, []), $countries->resolve([], []),

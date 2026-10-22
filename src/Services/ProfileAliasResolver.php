@@ -15,6 +15,12 @@ final class ProfileAliasResolver
 
     public const ALIASES = 'plugin_guidelink_aliases';
 
+    private ?array $resolutionInputs = null;
+
+    private array $resolution = [];
+
+    public function __construct(private readonly CountryRulesRepository $countryRules = new CountryRulesRepository) {}
+
     public function apply(array $entries, array $payload, PluginExecutionContext $context): array
     {
         $ids = AliasSetRepository::setIds($payload['alias_set_ids'] ?? []);
@@ -24,30 +30,39 @@ final class ProfileAliasResolver
         sort($ids);
 
         return DB::transaction(function () use ($entries, $payload, $context, $ids): array {
+            $selected = DB::table(self::SETS)->where('extension_plugin_id', $context->plugin->id)
+                ->whereIn('id', $ids)->get()->keyBy('id');
+            $customIds = $selected->filter(fn (object $set): bool => $set->enabled && ! $set->bundle_id)->keys()->all();
+            $aliasesBySet = array_fill_keys($customIds, []);
+            foreach ((new AliasSetRepository)->rows($customIds, $context, enabledOnly: true) as $alias) {
+                foreach ($alias['alias_set_ids'] as $setId) {
+                    if (array_key_exists($setId, $aliasesBySet)) {
+                        $aliasesBySet[$setId][] = $alias;
+                    }
+                }
+            }
             $sets = [];
+            $bundles = new BundledAliasService(countryRules: $this->countryRules);
             foreach ($ids as $id) {
-                $set = DB::table(self::SETS)->where('extension_plugin_id', $context->plugin->id)
-                    ->where('id', $id)->first();
+                $set = $selected->get($id);
                 if (! $set || ! $set->enabled) {
                     throw new \RuntimeException("Selected alias set [{$id}] is missing or disabled. Update Data → Profiles.");
                 }
                 if ($set->bundle_id) {
-                    $bundles = new BundledAliasService;
                     $bundle = $bundles->load($set->bundle_id);
                     if ($set->country !== $bundle['country']) {
                         throw new \RuntimeException("Alias set [{$set->name}] does not match its bundled country.");
                     }
                     $aliases = $bundle['entries'];
-                    $guideNames = (new GuideMapService)->targetNames((int) $payload['guide_epg_id'], array_column($aliases, 'target_stream_id'), $context);
-                    // Missing entries retain the ordinary warning/skip behavior below.
-                    $present = array_values(array_filter($aliases, fn (array $row): bool => array_key_exists($row['target_stream_id'], $guideNames)));
-                    $bundles->validateTargets($present, $guideNames, $payload);
                 } else {
-                    $aliases = $this->enabledAliases($id, $context);
-                    $this->validateReferenceGuide($set, $aliases, $entries, $payload, $context);
+                    $aliases = $aliasesBySet[$id];
                 }
-                $sets[] = ['id' => (int) $set->id, 'name' => $set->name, 'country' => $set->country, 'aliases' => $aliases];
+                $sets[] = [
+                    'id' => (int) $set->id, 'name' => $set->name, 'country' => $set->country, 'aliases' => $aliases,
+                    'guide_epg_id' => (int) $set->guide_epg_id, 'bundle_id' => $set->bundle_id,
+                ];
             }
+            $this->validateGuides($sets, $entries, $payload, $context, $bundles);
             $resolved = $this->resolveSets($entries, $payload, $sets);
             if ($resolved['unavailable_targets'] !== []) {
                 $context->warning('Alias targets are unavailable in this profile. Their mappings were skipped; ordinary matching rules still apply.', [
@@ -62,7 +77,7 @@ final class ProfileAliasResolver
     /** Load enabled custom aliases; bundled sets read their JSON directly. */
     public function enabledAliases(int $setId, PluginExecutionContext $context): array
     {
-        return array_values(array_filter((new AliasSetRepository)->rows($setId, $context), fn (array $row): bool => $row['enabled']));
+        return (new AliasSetRepository)->rows($setId, $context, enabledOnly: true);
     }
 
     /**
@@ -72,8 +87,12 @@ final class ProfileAliasResolver
      */
     public function resolveSets(array $entries, array $payload, array $sets): array
     {
-        $countries = new CountryRulesRepository;
+        $countries = $this->countryRules;
         $rules = $countries->resolve($payload, []);
+        $inputs = [$entries, $rules, $sets];
+        if ($this->resolutionInputs === $inputs) {
+            return $this->resolution;
+        }
         $owners = [];
         $targets = [];
         $unavailable = [];
@@ -124,30 +143,60 @@ final class ProfileAliasResolver
             }
         }
 
-        return ['entries' => $entries, 'unavailable_targets' => $unavailable];
+        $this->resolutionInputs = $inputs;
+
+        return $this->resolution = ['entries' => $entries, 'unavailable_targets' => $unavailable];
     }
 
-    /** IDs shared by two guides must still describe the same service. */
-    private function validateReferenceGuide(object $set, array $aliases, array $entries, array $payload, PluginExecutionContext $context): void
+    /** Read each required guide once per playlist, before reusing any alias preparation. */
+    private function validateGuides(array $sets, array $entries, array $payload, PluginExecutionContext $context, BundledAliasService $bundles): void
     {
         $guideId = (int) ($payload['guide_epg_id'] ?? 0);
-        if ((int) $set->guide_epg_id === $guideId) {
-            return;
+        $available = array_fill_keys(array_column(array_filter($entries, fn (array $entry): bool => $entry['guide_valid']), 'stream_id'), true);
+        $targetsByGuide = [];
+        $referenceTargets = [];
+        foreach ($sets as $set) {
+            $ids = array_fill_keys(array_column($set['aliases'], 'target_stream_id'), true);
+            if ($set['bundle_id']) {
+                $targetsByGuide[$guideId] = ($targetsByGuide[$guideId] ?? []) + $ids;
+            } elseif ($set['guide_epg_id'] !== $guideId) {
+                $ids = array_intersect_key($ids, $available);
+                if ($ids !== []) {
+                    $referenceTargets[$set['id']] = array_keys($ids);
+                    foreach ([$set['guide_epg_id'], $guideId] as $id) {
+                        $targetsByGuide[$id] = ($targetsByGuide[$id] ?? []) + $ids;
+                    }
+                }
+            }
         }
-        $available = array_column(array_filter($entries, fn (array $entry): bool => $entry['guide_valid']), 'stream_id');
-        $ids = array_values(array_intersect(array_column($aliases, 'target_stream_id'), $available));
-        if ($ids === []) {
+        if ($targetsByGuide === []) {
             return;
         }
         $guides = new GuideMapService;
-        $reference = $guides->targetNames((int) $set->guide_epg_id, $ids, $context);
-        $selected = $guides->targetNames($guideId, $ids, $context);
-        $countries = new CountryRulesRepository;
-        $rules = $countries->resolve($payload, []);
-        $keys = fn (array $names): array => array_map(fn (string $name): string => $countries->lookupKey($name, $rules), $names);
-        foreach ($ids as $id) {
-            if (array_intersect($keys($reference[$id] ?? []), $keys($selected[$id] ?? [])) === []) {
-                throw new \RuntimeException("Alias set [{$set->name}] target [{$id}] does not identify the same channel in its reference guide and this profile's guide. Choose a compatible set.");
+        $names = [];
+        foreach ($targetsByGuide as $id => $targets) {
+            $names[$id] = $guides->targetNames($id, array_keys($targets), $context);
+        }
+        $rules = $this->countryRules->resolve($payload, []);
+        $identities = [];
+        foreach ($sets as $set) {
+            if ($set['bundle_id']) {
+                // Missing entries retain the ordinary warning/skip behavior below.
+                $present = array_values(array_filter($set['aliases'], fn (array $row): bool => array_key_exists($row['target_stream_id'], $names[$guideId])));
+                $bundles->validateTargets($present, $names[$guideId], $payload);
+
+                continue;
+            }
+            foreach ($referenceTargets[$set['id']] ?? [] as $targetId) {
+                foreach ([$set['guide_epg_id'], $guideId] as $id) {
+                    $identities[$id][$targetId] ??= array_map(
+                        fn (string $name): string => $this->countryRules->lookupKey($name, $rules),
+                        $names[$id][$targetId] ?? [],
+                    );
+                }
+                if (array_intersect($identities[$set['guide_epg_id']][$targetId], $identities[$guideId][$targetId]) === []) {
+                    throw new \RuntimeException("Alias set [{$set['name']}] target [{$targetId}] does not identify the same channel in its reference guide and this profile's guide. Choose a compatible set.");
+                }
             }
         }
     }

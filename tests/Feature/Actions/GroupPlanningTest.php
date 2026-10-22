@@ -25,7 +25,7 @@ class GroupPlanningTest extends PluginFeatureTestCase
     {
         [$context, $playlist] = $this->context(dryRun: false);
         $service = new GroupSyncService(new CountryRulesRepository);
-        $plan = $service->plan([['category' => 'Entertainment']], [], []);
+        $plan = $service->plan([['category' => 'Entertainment']], []);
         $first = $service->apply($playlist, $plan, $context);
         $second = $service->apply($playlist, $plan, $context);
 
@@ -44,7 +44,7 @@ class GroupPlanningTest extends PluginFeatureTestCase
             'name' => 'Entertainment', 'sort_order' => 88, 'custom' => true,
         ]);
         $service = new GroupSyncService(new CountryRulesRepository);
-        $plan = $service->plan([['category' => 'Entertainment']], [], ['entertainment' => $group]);
+        $plan = $service->plan([['category' => 'Entertainment']], ['entertainment' => $group]);
         $group->forceFill(['name' => 'Personal channels'])->saveQuietly();
         $result = $service->apply($playlist, $plan, $context);
         $this->assertTrue($result['aborted']);
@@ -61,14 +61,14 @@ class GroupPlanningTest extends PluginFeatureTestCase
             'name' => 'Entertainment', 'sort_order' => 1.5, 'custom' => true,
         ]);
         $service = new GroupSyncService(new CountryRulesRepository);
-        $plan = $service->plan([['category' => 'Entertainment']], [], ['entertainment' => $group]);
+        $plan = $service->plan([['category' => 'Entertainment']], ['entertainment' => $group]);
         $this->assertSame('update_sort', $plan[0]['action']);
         $group->forceFill(['sort_order' => 1.75])->saveQuietly();
         $stale = $service->apply($playlist, $plan, $context);
         $this->assertSame(1, $stale['groups_failed']);
         $this->assertSame(1.75, (float) $group->refresh()->sort_order);
 
-        $plan = $service->plan([['category' => 'Entertainment']], [], ['entertainment' => $group]);
+        $plan = $service->plan([['category' => 'Entertainment']], ['entertainment' => $group]);
         $first = $service->apply($playlist, $plan, $context);
         $second = $service->apply($playlist, $plan, $context);
         $this->assertSame(1, $first['groups_updated']);
@@ -91,13 +91,13 @@ class GroupPlanningTest extends PluginFeatureTestCase
         $entries = array_map(fn (string $category): array => ['category' => $category], [
             'Entertainment', ' entertainment ', 'ENTERTAINMENT', 'UK| Entertainment HD', '   ', 'Sports',
         ]);
-        $plan = $service->plan($entries, [], []);
+        $plan = $service->plan($entries, []);
         $this->assertCount(3, $plan);
         $this->assertSame([1, 2, 3], array_column($plan, 'desired_sort_order'));
         $first = $service->apply($playlist, $plan, $context);
         $this->assertSame(3, $first['groups_created']);
         $this->assertSame(3, Group::where('playlist_id', $playlist->id)->count());
-        $again = $service->apply($playlist, $service->plan($entries, [], $first['groups_by_name']), $context);
+        $again = $service->apply($playlist, $service->plan($entries, $first['groups_by_name']), $context);
         $this->assertSame(0, $again['groups_created']);
         $this->assertSame(0, $again['groups_updated']);
     }

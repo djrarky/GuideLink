@@ -1,7 +1,7 @@
 {
   "id": "guidelink",
   "name": "GuideLink",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "api_version": "1.0.0",
   "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
   "entrypoint": "Plugin.php",
@@ -443,12 +443,12 @@
         "label": "Profiles",
         "model_label": "Profile",
         "table": "plugin_guidelink_profiles",
-        "description": "Reusable matching/source configuration profiles.",
+        "description": "Settings for assigned playlists. Saving a profile does not run a sync. Use Preview Sync to review changes, then Run Sync to apply them, or wait for a scheduled sync configured to apply changes.",
         "export_formats": [],
         "columns": [
           {
             "name": "name",
-            "label": "Name",
+            "label": "Profile",
             "searchable": true,
             "sortable": true
           },
@@ -460,7 +460,7 @@
           },
           {
             "name": "settings.provider_source",
-            "label": "Provider Source",
+            "label": "Listings website",
             "options_provider": "guidelink_sources",
             "depends_on": [
               "settings.country",
@@ -480,45 +480,42 @@
         ],
         "fields": [
           {
-            "id": "name",
-            "label": "Profile Name",
-            "type": "text",
-            "required": true,
-            "helper_text": "Friendly name shown when assigning this profile to playlists."
-          },
-          {
-            "id": "enabled",
-            "label": "Enabled",
-            "type": "boolean",
-            "default": true,
-            "helper_text": "Disabled profiles stay saved but are ignored by setup, reports, sync, and schedules."
-          },
-          {
-            "id": "settings.alias_set_ids",
-            "label": "Alias Sets",
-            "type": "table_select",
-            "table": "plugin_guidelink_alias_sets",
-            "value_column": "id",
-            "label_column": "name",
-            "enabled_only": true,
-            "scope_plugin": true,
-            "multiple": true,
-            "helper_text": "Optional shared channel aliases from Data → Alias Sets. Sets must use this profile’s country; targets must exist in its guide."
+            "type": "section",
+            "label": "Profile details",
+            "columns": 2,
+            "fields": [
+              {
+                "id": "name",
+                "label": "Profile name",
+                "type": "text",
+                "required": true,
+                "helper_text": "Give this profile a name you will recognise when assigning it to playlists."
+              },
+              {
+                "id": "enabled",
+                "label": "Use this profile",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Allow GuideLink to use this profile for setup, reports and syncs. Turning it off keeps the profile and previously applied playlist changes."
+              }
+            ],
+            "description": "Saving changes this profile only. Use Preview Sync to review the saved settings, then Run Sync to apply them, or wait for a scheduled sync configured to apply changes."
           },
           {
             "type": "section",
-            "label": "Source",
-            "description": "Choose where GuideLink gets canonical channel data and how fresh that source must be.",
+            "label": "Lineup & programme guide",
+            "description": "Choose the reference lineup and numbered programme guide used to identify its channels.",
             "fields": [
               {
-                "id": "settings.guide_epg_id",
-                "label": "Guide EPG",
-                "type": "model_select",
-                "model": "App\\Models\\Epg",
-                "label_attribute": "name",
-                "scope": "owned",
-                "required": true,
-                "helper_text": "Required numbered guide EPG used to validate channel numbers and supply consistent stream IDs for auto-merge."
+                "id": "settings.source_mode",
+                "label": "Lineup source",
+                "type": "select",
+                "options": {
+                  "scraper_cache": "Listings website",
+                  "native_playlist": "Another playlist"
+                },
+                "default": "scraper_cache",
+                "helper_text": "Use a supported listings website or an existing playlist for channel names, numbers and groups. Both options need a numbered programme guide."
               },
               {
                 "id": "settings.country",
@@ -526,458 +523,608 @@
                 "type": "select",
                 "options_provider": "guidelink_countries",
                 "default": "uk",
-                "helper_text": "Country rules control aliases, exclusions, and provider/source compatibility."
+                "helper_text": "Choose the country whose channel naming rules and lineup sources GuideLink should use."
               },
               {
-                "id": "settings.provider",
-                "label": "Provider",
-                "type": "select",
-                "options_provider": "guidelink_providers",
-                "depends_on": [
-                  "settings.country"
+                "id": "settings.guide_epg_id",
+                "label": "Programme guide (EPG)",
+                "type": "model_select",
+                "model": "App\\Models\\Epg",
+                "label_attribute": "name",
+                "scope": "owned",
+                "required": true,
+                "helper_text": "Select a guide with channel numbers that match the lineup. GuideLink uses it to validate matches and assign consistent guide identities."
+              },
+              {
+                "type": "section",
+                "label": "Website lineup",
+                "description": "Used when Lineup source is Listings website.",
+                "fields": [
+                  {
+                    "id": "settings.provider",
+                    "label": "Lineup provider",
+                    "type": "select",
+                    "options_provider": "guidelink_providers",
+                    "depends_on": [
+                      "settings.country"
+                    ],
+                    "default": "sky",
+                    "helper_text": "Choose the television lineup to follow, such as Sky. This is the lineup provider, not your IPTV account provider."
+                  },
+                  {
+                    "id": "settings.provider_source",
+                    "label": "Listings website",
+                    "type": "select",
+                    "options_provider": "guidelink_sources",
+                    "depends_on": [
+                      "settings.country",
+                      "settings.provider"
+                    ],
+                    "default": "viewersvault",
+                    "helper_text": "Choose the website that supplies the selected provider's channel lineup."
+                  },
+                  {
+                    "id": "settings.region",
+                    "label": "Lineup region",
+                    "type": "text",
+                    "default": "1",
+                    "helper_text": "Enter the provider's region number or exact region name to select the local channel lineup. For Sky, region 7 is Granada."
+                  }
                 ],
-                "default": "sky",
-                "helper_text": "Registry-backed provider family. Choices update from the selected country."
-              },
-              {
-                "id": "settings.provider_source",
-                "label": "Provider Source",
-                "type": "select",
-                "options_provider": "guidelink_sources",
-                "depends_on": [
-                  "settings.country",
-                  "settings.provider"
-                ],
-                "default": "viewersvault",
-                "helper_text": "Canonical source for the selected provider and country."
-              },
-              {
-                "id": "settings.region",
-                "label": "Region",
-                "type": "text",
-                "default": "1",
-                "helper_text": "Provider region number or exact region name. For Sky, region 7 is Granada."
-              },
-              {
-                "id": "settings.source_mode",
-                "label": "Source Mode",
-                "type": "select",
-                "options": {
-                  "scraper_cache": "Scraper cache",
-                  "native_playlist": "Native playlist"
-                },
-                "default": "scraper_cache",
-                "helper_text": "Use scraper cache for registry-backed sources, or native playlist when another playlist is the source of truth."
+                "visible_when": {
+                  "settings.source_mode": [
+                    "scraper_cache"
+                  ]
+                }
               },
               {
                 "id": "settings.source_playlist_id",
-                "label": "Source Playlist",
+                "label": "Reference playlist",
                 "type": "model_select",
                 "model": "App\\Models\\Playlist",
                 "label_attribute": "name",
                 "scope": "owned",
                 "required": false,
-                "helper_text": "Required only when Source Mode is native playlist."
+                "helper_text": "When the lineup source is Another playlist, choose the playlist to copy the lineup from. Only enabled live channels with usable channel numbers are included.",
+                "visible_when": {
+                  "settings.source_mode": [
+                    "native_playlist"
+                  ]
+                }
               },
               {
-                "id": "settings.scraping_api",
-                "label": "Scraping API",
-                "type": "select",
-                "options_provider": "guidelink_scrapers",
-                "default": "direct_http",
-                "helper_text": "Backend used to fetch source pages. API-backed scrapers help with pages that block direct HTTP."
-              },
-              {
-                "id": "settings.scraping_api_key",
-                "label": "Scraping API Key",
-                "type": "text",
-                "secret": true,
-                "required": false,
-                "helper_text": "Required for scrape.do and OloStep. Enter the API key here; Direct HTTP does not require one."
-              },
-              {
-                "id": "settings.scraping_timeout_seconds",
-                "label": "Scraping Timeout Seconds",
-                "type": "number",
-                "default": 60,
-                "helper_text": "Per-page HTTP timeout. A refresh fetches both region map and channel pages."
-              },
-              {
-                "id": "settings.source_cache_days",
-                "label": "Source Cache Days",
-                "type": "number",
-                "default": 2,
-                "helper_text": "Maximum age for parsed source cache. Use 0 to fetch every time."
-              },
-              {
-                "id": "settings.max_retries",
-                "label": "Max Retries",
-                "type": "number",
-                "default": 3,
-                "helper_text": "Attempts per source page before falling back to the parsed last-good cache."
-              },
-              {
-                "id": "settings.min_channels",
-                "label": "Minimum Source Channels",
-                "type": "number",
-                "default": 100,
-                "helper_text": "Rejects suspiciously small parsed source output before it replaces cache."
-              },
-              {
-                "id": "settings.max_drop_percent",
-                "label": "Maximum Drop Percent",
-                "type": "number",
-                "default": 20,
-                "helper_text": "Refuses to replace last-good cache when parsed channel count drops too far."
+                "type": "section",
+                "label": "Downloads & source checks",
+                "description": "For Listings website sources: configure downloads and protect the saved lineup from incomplete results. Another playlist does not use these options.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "id": "settings.scraping_api",
+                    "label": "Download method",
+                    "type": "select",
+                    "options_provider": "guidelink_scrapers",
+                    "default": "direct_http",
+                    "helper_text": "Download directly, or use a supported download service when the listings website blocks direct requests."
+                  },
+                  {
+                    "id": "settings.scraping_api_key",
+                    "label": "Download service API key",
+                    "type": "text",
+                    "secret": true,
+                    "required": false,
+                    "helper_text": "Enter the API key for the selected download service. Direct HTTP does not need a key.",
+                    "visibility_provider": "guidelink_download_key",
+                    "visibility_depends_on": [
+                      "settings.scraping_api"
+                    ]
+                  },
+                  {
+                    "id": "settings.scraping_timeout_seconds",
+                    "label": "Download timeout (seconds)",
+                    "type": "number",
+                    "default": 60,
+                    "helper_text": "Maximum time to wait for each page request. A lineup refresh can download several pages."
+                  },
+                  {
+                    "id": "settings.source_cache_days",
+                    "label": "Reuse downloaded lineup for (days)",
+                    "type": "number",
+                    "default": 2,
+                    "helper_text": "During a source refresh, reuse a saved lineup younger than this age. Set to 0 to download on every refresh. This does not schedule refreshes."
+                  },
+                  {
+                    "id": "settings.max_retries",
+                    "label": "Download attempts",
+                    "type": "number",
+                    "default": 3,
+                    "helper_text": "Maximum attempts for each page, including the first request. Some errors stop attempts early; GuideLink can fall back to a valid saved lineup."
+                  },
+                  {
+                    "id": "settings.min_channels",
+                    "label": "Minimum lineup size",
+                    "type": "number",
+                    "default": 100,
+                    "helper_text": "Reject downloaded or saved website lineups with fewer channels than this. Choose a minimum below the normal size of your lineup."
+                  },
+                  {
+                    "id": "settings.max_drop_percent",
+                    "label": "Maximum lineup reduction (%)",
+                    "type": "number",
+                    "default": 20,
+                    "helper_text": "Keep the previous saved lineup if a refresh loses more than this percentage of its channels."
+                  }
+                ],
+                "visible_when": {
+                  "settings.source_mode": [
+                    "scraper_cache"
+                  ]
+                }
               }
             ]
           },
           {
             "type": "section",
-            "label": "Scope",
-            "description": "Limit which playlist channels GuideLink evaluates and which groups it may rewrite.",
+            "label": "Channel handling",
+            "description": "Choose how confirmed matches are organised and what happens to unconfirmed channels. A suggestion needing review is not a confirmed match.",
             "fields": [
               {
-                "id": "settings.include_scrubber_logs",
-                "label": "Include Scrubber Logs",
-                "type": "boolean",
-                "default": true,
-                "helper_text": "Include scrubber health context in availability and repair reports when available."
-              },
-              {
                 "id": "settings.include_managed_groups",
-                "label": "Include Managed Source Groups",
+                "label": "Use lineup groups",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "Allow source categories and managed groups to be included in scope and created during apply."
-              },
-              {
-                "id": "settings.disable_other_groups",
-                "label": "Disable Channels and Groups Without Confirmed Matches",
-                "type": "boolean",
-                "default": false,
-                "helper_text": "Disable every channel without a confirmed match, including matches needing review, and block native auto-merge from re-enabling it. With group management enabled, also disable provider groups left empty or containing only these disabled channels. Explicit preserve rules still apply."
+                "helper_text": "Move matched channels into the lineup's groups and maintain their group order. When off, GuideLink leaves group assignments and group setup unchanged."
               },
               {
                 "id": "settings.logo_source",
-                "label": "Channel Logo Source",
+                "label": "Channel logos",
                 "type": "select",
                 "default": "preserve",
                 "options": {
-                  "preserve": "Keep Existing Preference",
-                  "epg": "EPG Logos",
-                  "channel": "Provider Logos"
+                  "preserve": "Keep each channel's preference",
+                  "epg": "Programme guide logos",
+                  "channel": "Stream provider logos"
                 },
-                "helper_text": "Set the logo preference for matched channels, including disabled backups. Explicit custom logo overrides remain in place; EPG logos fall back to provider logos when missing."
+                "helper_text": "Choose the logo preference for matched channels, including disabled backups. Custom logo overrides are kept; missing guide logos fall back to provider logos."
               },
-              {
-                "id": "settings.include_group_prefixes",
-                "label": "Include Group Prefixes",
-                "type": "tags",
-                "default": [],
-                "helper_text": "Leave empty to consider all groups. Enter prefixes to limit scope; exclusions and preserved groups still apply."
-              },
-              {
-                "id": "settings.exclude_group_regex",
-                "label": "Exclude Group Regex",
-                "type": "tags",
-                "helper_text": "Regex patterns for groups to exclude even when their prefix matches."
-              },
-              {
-                "id": "settings.preserve_groups",
-                "label": "Preserve Groups",
-                "type": "tags",
-                "helper_text": "Exact group names that GuideLink must never move or rewrite."
-              },
-              {
-                "id": "settings.preserve_group_name_regex",
-                "label": "Preserve Group Name Regex",
-                "type": "tags",
-                "helper_text": "Regex patterns for group names GuideLink must never move or rewrite."
-              },
-              {
-                "id": "settings.preserve_channel_title_regex",
-                "label": "Preserve Channel Title Regex",
-                "type": "tags",
-                "helper_text": "Regex patterns for channel titles GuideLink must never rewrite."
-              }
-            ]
-          },
-          {
-            "type": "section",
-            "label": "Playlist Layout",
-            "description": "Manage playlist ordering, numbering and new live-channel imports on Run Sync. Ordering and numbering settings affect the whole assigned playlist, including VOD. Installation alone does not change existing playlists.",
-            "fields": [
               {
                 "id": "settings.playlist_layout_managed",
-                "label": "Let GuideLink Manage Playlist Layout",
+                "label": "Manage playlist layout & imports",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "Enabled by default. Disables Channel Auto Sort, Group Auto Sort and Force Channel Number Override, and applies the ordering, numbering and import choices below. Preview Sync shows each change; Run Sync restores managed values. Turning this off leaves the last applied settings in place."
+                "helper_text": "On Run Sync or a scheduled sync that applies changes, manage playlist ordering, numbering and new live imports. Turn off automatic channel/group sorting and forced numbering; apply the choices below. Ordering and numbering affect the whole playlist, including VOD. Turning this off keeps the last applied settings."
               },
               {
-                "id": "settings.playlist_output_order",
-                "label": "Playlist Output Order",
-                "type": "select",
-                "default": "group",
-                "options": {
-                  "number": "Guide Channel Number Order",
-                  "group": "Group Order, Then Channel Order"
-                },
-                "helper_text": "Used only while GuideLink manages layout. Choose a flat list ordered by guide number or keep the guide group order with channels ordered inside each group."
-              },
-              {
-                "id": "settings.playlist_missing_numbers",
-                "label": "Automatic Numbering for Missing Numbers",
-                "type": "select",
-                "default": "disabled",
-                "options": {
-                  "preserve": "Keep Existing Preference",
-                  "enabled": "Enable Automatic Numbering",
-                  "disabled": "Disable Automatic Numbering"
-                },
-                "helper_text": "Used only while GuideLink manages layout. Controls Auto Channel Number Increment without replacing saved guide numbers. Keeps the native starting number and TVG ID choice; number-based TVG IDs can still require numbering unnumbered channels."
+                "id": "settings.disable_other_groups",
+                "label": "Disable channels without a confirmed match",
+                "type": "boolean",
+                "default": false,
+                "helper_text": "When you run Run Sync, or a scheduled sync applies changes, disable unconfirmed channels, including review suggestions and excluded channels. Exceptions below are kept. With Use lineup groups on, also disable eligible provider groups left empty or containing only channels disabled by this policy. Turning this off does not re-enable channels or groups."
               },
               {
                 "id": "settings.playlist_enable_new_channels",
-                "label": "Enable New Live Channels",
+                "label": "Enable newly imported live channels",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "Used only while GuideLink manages layout. Enable live channels discovered by future provider imports. Existing disabled channels stay disabled. The unmatched-channel policy runs at the next GuideLink sync."
+                "helper_text": "While Manage playlist layout & imports is on, enable live channels discovered in future provider imports. Existing disabled channels stay disabled. New channels can remain enabled until Run Sync or a scheduled sync applies the unmatched-channel policy."
+              },
+              {
+                "id": "settings.preserve_groups",
+                "label": "Groups to leave unchanged",
+                "type": "tags",
+                "helper_text": "Enter exact group names. GuideLink leaves their matching, metadata and channel/group cleanup unchanged. These exceptions do not undo earlier changes or stop playlist imports and stream checks."
+              },
+              {
+                "type": "section",
+                "label": "Pattern-based exceptions",
+                "description": "Leave matching groups or channels unchanged by GuideLink. These exceptions do not stop other playlist jobs or undo earlier changes. Use regular expressions, not wildcard patterns.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "id": "settings.preserve_group_name_regex",
+                    "label": "Groups to leave unchanged — name patterns",
+                    "type": "tags",
+                    "helper_text": "Leave matching groups and their channels unchanged during GuideLink matching and cleanup. Enter one regular expression per tag."
+                  },
+                  {
+                    "id": "settings.preserve_channel_title_regex",
+                    "label": "Channels to leave unchanged — name patterns",
+                    "type": "tags",
+                    "helper_text": "Leave channels with matching titles unchanged during GuideLink matching and cleanup. Enter one regular expression per tag."
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "label": "Which groups to match",
+                "description": "Limit matching attempts. Skipped channels can still be disabled by the unmatched-channel policy; use exceptions to leave them unchanged.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "id": "settings.include_group_prefixes",
+                    "label": "Match groups starting with",
+                    "type": "tags",
+                    "default": [],
+                    "helper_text": "Enter group-name prefixes, such as UK|, or leave blank for no prefix restriction. Lineup groups are also included when Use lineup groups is on."
+                  },
+                  {
+                    "id": "settings.exclude_group_regex",
+                    "label": "Skip matching groups — name patterns",
+                    "type": "tags",
+                    "helper_text": "Skip matching channels in groups whose names match these regular expressions. These channels can still be disabled by the unmatched-channel policy; use Exceptions to leave them unchanged."
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "label": "Ordering & numbering",
+                "description": "Used while Manage playlist layout & imports is on. These preferences affect the whole assigned playlist, including VOD.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "id": "settings.playlist_output_order",
+                    "label": "Playlist order",
+                    "type": "select",
+                    "default": "group",
+                    "options": {
+                      "number": "Channel number",
+                      "group": "Group order, then channel order"
+                    },
+                    "helper_text": "Output a single list in channel-number order, or keep groups together with channels ordered inside each group."
+                  },
+                  {
+                    "id": "settings.playlist_missing_numbers",
+                    "label": "Automatic numbers for unnumbered channels",
+                    "type": "select",
+                    "default": "disabled",
+                    "options": {
+                      "preserve": "Keep playlist preference",
+                      "enabled": "On",
+                      "disabled": "Off"
+                    },
+                    "helper_text": "Control automatic numbering for channels without a saved number. Existing guide numbers and the playlist's starting number are kept. Number-based TVG IDs may still require a number when this is off."
+                  }
+                ]
+              },
+              {
+                "id": "settings.alias_set_ids",
+                "label": "Channel-name alias sets",
+                "type": "table_select",
+                "table": "plugin_guidelink_alias_sets",
+                "value_column": "id",
+                "label_column": "name",
+                "enabled_only": true,
+                "scope_plugin": true,
+                "multiple": true,
+                "helper_text": "Add shared alternative channel names to matching. Choose compatible sets from Data → Alias Sets; their country and target channels must match this profile's guide."
+              },
+              {
+                "type": "section",
+                "label": "Matching rules",
+                "description": "Standard values are usually suitable. Scores are comparison points, not probabilities. Preview Sync after changing these rules to inspect the results.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "type": "section",
+                    "label": "Match acceptance",
+                    "columns": 2,
+                    "fields": [
+                      {
+                        "id": "settings.fuzzy_threshold",
+                        "label": "Minimum name similarity",
+                        "type": "number",
+                        "default": 90,
+                        "helper_text": "Minimum similarity for an approximate name comparison to become a candidate. Higher values accept fewer name variations; lower values allow more candidates."
+                      },
+                      {
+                        "id": "settings.min_auto_score",
+                        "label": "Minimum automatic-match score",
+                        "type": "number",
+                        "default": 90,
+                        "helper_text": "Minimum score for accepting scored matches automatically. Higher values can send more candidates for review; exact matches and other identity rules follow their own checks."
+                      },
+                      {
+                        "id": "settings.min_auto_margin",
+                        "label": "Required lead over next candidate",
+                        "type": "number",
+                        "default": 12,
+                        "helper_text": "Normally require the best approximate match to lead the next candidate by this many points. Higher values send more close matches for review."
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "label": "Whole-name and word comparison",
+                    "columns": 2,
+                    "fields": [
+                      {
+                        "id": "settings.sort_floor_offset",
+                        "label": "Word-order score allowance",
+                        "type": "number",
+                        "default": 10,
+                        "helper_text": "Allow the supporting word-order comparison score to fall this many points below Minimum name similarity. Higher values make some approximate matching paths more permissive."
+                      },
+                      {
+                        "id": "settings.min_set_tokens",
+                        "label": "Minimum lineup-name words for word-set matching",
+                        "type": "number",
+                        "default": 2,
+                        "helper_text": "Require this many words in the lineup name before comparing shared word sets. Higher values limit this method to longer lineup names."
+                      },
+                      {
+                        "id": "settings.min_ratio_len_ratio",
+                        "label": "Minimum full-name length ratio",
+                        "type": "number",
+                        "default": 0.7,
+                        "helper_text": "For full-name comparison, require the shorter name to be at least this fraction of the longer name. Higher values allow less difference in length; 0.70 means 70%."
+                      },
+                      {
+                        "id": "settings.min_ratio_score",
+                        "label": "Full-name score without supporting word match",
+                        "type": "number",
+                        "default": 90,
+                        "helper_text": "Require this full-name score when the supporting word-order score is too low. Higher values make this route stricter; Minimum name similarity still applies."
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "label": "Partial-name comparison",
+                    "columns": 2,
+                    "fields": [
+                      {
+                        "id": "settings.min_partial_len_ratio",
+                        "label": "Minimum partial-name length ratio",
+                        "type": "number",
+                        "default": 0.65,
+                        "helper_text": "Before comparing part of a name, require the shorter name to be at least this fraction of the longer name. Higher values allow less difference in length; 0.65 means 65%."
+                      },
+                      {
+                        "id": "settings.min_partial_len",
+                        "label": "Minimum partial-name length",
+                        "type": "number",
+                        "default": 5,
+                        "helper_text": "Require both names to contain at least this many characters before partial-name comparison. Higher values prevent this method from using very short names."
+                      },
+                      {
+                        "id": "settings.min_partial_ratio_score",
+                        "label": "Supporting full-name score for partial matches",
+                        "type": "number",
+                        "default": 80,
+                        "helper_text": "Require this full-name similarity before accepting evidence from a partial-name comparison. Higher values make partial matching stricter."
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "label": "Short names and abbreviations",
+                    "columns": 2,
+                    "fields": [
+                      {
+                        "id": "settings.min_alias_words",
+                        "label": "Minimum words for derived name variants",
+                        "type": "number",
+                        "default": 2,
+                        "helper_text": "Use this word count when checking automatically derived name variants. Higher values limit variants that are too short to identify a channel reliably."
+                      },
+                      {
+                        "id": "settings.min_alias_chars",
+                        "label": "Minimum characters for derived name variants",
+                        "type": "number",
+                        "default": 4,
+                        "helper_text": "Use this character count to guard shortened or derived name variants. Higher values reject more short variants and broadcaster-prefix shortcuts."
+                      },
+                      {
+                        "id": "settings.max_short_token_len",
+                        "label": "Short-word safeguard length",
+                        "type": "number",
+                        "default": 2,
+                        "helper_text": "Treat abbreviations up to this length more cautiously. Higher values extend the safeguard to longer words and can send more ambiguous names for review."
+                      },
+                      {
+                        "id": "settings.min_token_similarity",
+                        "label": "Minimum similarity for spelling differences",
+                        "type": "number",
+                        "default": 60,
+                        "helper_text": "Require this similarity before treating differing words as a small spelling variation. Higher values make the distinguishing-word check stricter."
+                      }
+                    ]
+                  }
+                ]
               }
             ]
           },
           {
             "type": "section",
-            "label": "Native Setup",
-            "description": "Desired m3u-editor auto-merge and scrubber setup for playlists using this profile.",
+            "label": "Backups & stream health",
+            "description": "Choose the primary stream for playback and backups for failover. Run Sync saves these settings; playlist imports and stream checks perform the processing. Run Sync does not itself start a scan or rebuild backups.",
             "fields": [
               {
                 "id": "settings.auto_merge_preferred_playlist_id",
-                "label": "Auto-Merge Preferred Playlist",
+                "label": "Preferred stream playlist",
                 "type": "model_select",
                 "model": "App\\Models\\Playlist",
                 "label_attribute": "name",
                 "scope": "owned",
                 "required": false,
-                "helper_text": "Preferred source of primary streams when merging playlists. Defaults to this playlist. Catch-up preference and resolution can take priority."
+                "helper_text": "Prefer primary streams from this playlist. Leave blank to use each assigned playlist. Catch-up and resolution preferences can take priority."
               },
               {
                 "id": "settings.auto_merge_failover_playlist_ids",
-                "label": "Backup Playlists",
+                "label": "Backup playlists",
                 "type": "model_select",
                 "model": "App\\Models\\Playlist",
                 "label_attribute": "name",
                 "scope": "owned",
                 "multiple": true,
                 "default": [],
-                "helper_text": "Choose additional backup playlists in priority order. Leave empty to use only the assigned playlist."
+                "helper_text": "Choose additional playlists in priority order for backup streams. Leave empty to use channels from the assigned playlist only."
               },
               {
                 "id": "settings.auto_merge_deactivate_failover",
-                "label": "Deactivate Failover Channels",
+                "label": "Hide backup entries",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "Hidden-failover policy. Auto-merge disables backup channels after master selection, and GuideLink uses the same policy to keep the scrubber from re-exposing them."
+                "helper_text": "Keep backup streams available for failover while disabling their separate playlist entries. Apply this when m3u-editor next processes backups."
               },
               {
-                "id": "settings.auto_merge_new_channels_only",
-                "label": "Merge Only New Channels",
-                "type": "boolean",
-                "default": false,
-                "helper_text": "Enable only when native auto-merge should skip rebuilding existing failover topology."
+                "type": "section",
+                "label": "Primary stream selection",
+                "description": "Refine which eligible stream m3u-editor chooses for normal playback.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "id": "settings.auto_merge_check_resolution",
+                    "label": "Prefer higher resolution",
+                    "type": "boolean",
+                    "default": true,
+                    "helper_text": "Prefer higher-resolution streams when choosing the primary stream. m3u-editor uses saved stream statistics and may probe streams when needed."
+                  },
+                  {
+                    "id": "settings.auto_merge_prefer_catchup_as_primary",
+                    "label": "Prefer catch-up support",
+                    "type": "boolean",
+                    "default": true,
+                    "helper_text": "Prefer eligible streams with catch-up support before applying resolution and playlist preferences."
+                  },
+                  {
+                    "id": "settings.auto_merge_exclude_disabled_groups",
+                    "label": "Avoid primary streams from disabled groups",
+                    "type": "boolean",
+                    "default": true,
+                    "helper_text": "Exclude channels in disabled groups when choosing a primary stream."
+                  },
+                  {
+                    "id": "settings.auto_merge_scrubber_aware_master_selection",
+                    "label": "Avoid primary streams that failed checks",
+                    "type": "boolean",
+                    "default": true,
+                    "helper_text": "Exclude streams recorded as failed by the stream checker when choosing a primary stream. This uses saved health results; it does not start a new check."
+                  }
+                ]
               },
               {
-                "id": "settings.auto_merge_force_complete_remerge",
-                "label": "Force Complete Re-Merge",
-                "type": "boolean",
-                "default": true,
-                "helper_text": "Rebuild native failover topology fully when applying native setup."
-              },
-              {
-                "id": "settings.auto_merge_merge_key",
-                "label": "Auto-Merge Key",
-                "type": "select",
-                "options": {
-                  "stream_id": "Stream ID",
-                  "tmdb_id": "TMDB ID"
-                },
-                "default": "stream_id",
-                "helper_text": "Native merge key used to identify matching live-channel failovers."
-              },
-              {
-                "id": "settings.auto_merge_check_resolution",
-                "label": "Prioritize By Resolution",
-                "type": "boolean",
-                "default": true,
-                "helper_text": "Prefer higher-resolution streams during native primary selection. Uses stream statistics and may probe streams when needed."
-              },
-              {
-                "id": "settings.auto_merge_prefer_catchup_as_primary",
-                "label": "Prefer Catch-up As Primary",
-                "type": "boolean",
-                "default": true,
-                "helper_text": "Prefer eligible catch-up streams first, then apply resolution and playlist preferences."
-              },
-              {
-                "id": "settings.auto_merge_exclude_disabled_groups",
-                "label": "Exclude Disabled Groups From Master Selection",
-                "type": "boolean",
-                "default": true,
-                "helper_text": "Avoid selecting master channels from disabled groups."
-              },
-              {
-                "id": "settings.scrubber_recurring",
-                "label": "Run Scrubber After Playlist Sync",
-                "type": "boolean",
-                "default": true,
-                "helper_text": "Let the native scrubber refresh health state after playlist sync."
-              },
-              {
-                "id": "settings.auto_merge_scrubber_aware_master_selection",
-                "label": "Scrubber-aware Primary Selection",
-                "type": "boolean",
-                "default": true,
-                "helper_text": "Exclude channels confirmed dead by the scrubber when choosing the primary channel."
+                "type": "section",
+                "label": "Backup matching & rebuilds",
+                "description": "Configure how m3u-editor groups equivalent streams when its backup processing runs.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "id": "settings.auto_merge_new_channels_only",
+                    "label": "Only process newly imported channels",
+                    "type": "boolean",
+                    "default": false,
+                    "helper_text": "Limit backup processing to channels marked as new by m3u-editor. Leave off to include existing eligible channels too."
+                  },
+                  {
+                    "id": "settings.auto_merge_force_complete_remerge",
+                    "label": "Reconsider existing backup assignments",
+                    "type": "boolean",
+                    "default": true,
+                    "helper_text": "Allow existing backup streams to be reconsidered during the next merge. The new-channels-only restriction still applies when enabled."
+                  },
+                  {
+                    "id": "settings.auto_merge_merge_key",
+                    "label": "Match backup streams by",
+                    "type": "select",
+                    "options": {
+                      "stream_id": "Stream ID",
+                      "tmdb_id": "TMDB ID"
+                    },
+                    "default": "stream_id",
+                    "helper_text": "Choose the identifier m3u-editor uses to group matching streams. Stream ID is the normal choice for GuideLink live channels; TMDB ID requires matching TMDB metadata."
+                  }
+                ]
               },
               {
                 "id": "settings.scrubber_id",
-                "label": "Existing User-managed Scrubber",
+                "label": "Stream checker",
                 "type": "model_select",
                 "model": "App\\Models\\ChannelScrubber",
                 "label_attribute": "name",
                 "scope": "owned",
                 "required": false,
-                "helper_text": "Leave blank for GuideLink to create and manage a scrubber. A selected user-managed scrubber is audited without changing it."
+                "helper_text": "Leave blank for GuideLink to create or reuse its checker for each assigned playlist. A selected checker must belong to that playlist. GuideLink only changes checkers it manages; edit a user-managed checker in m3u-editor's Channel Scrubbers screen."
               },
               {
-                "id": "settings.scrubber_scan_all",
-                "label": "Scan Disabled Channels",
+                "id": "settings.scrubber_recurring",
+                "label": "Check streams after playlist import",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "Keeps last_scrubber_live fresh for disabled failover-topology channels so native auto-merge can recover them safely."
+                "helper_text": "Run the managed stream checker after m3u-editor imports or refreshes the provider playlist. This is separate from a GuideLink metadata sync.",
+                "visibility_provider": "guidelink_managed_checker",
+                "visibility_depends_on": [
+                  "settings.scrubber_id"
+                ]
               },
               {
                 "id": "settings.scrubber_disable_dead",
-                "label": "Disable Dead Channels",
-                "type": "boolean",
-                "default": true
-              },
-              {
-                "id": "settings.scrubber_rebuild_failovers_after_scan",
-                "label": "Rebuild Failovers After Scan",
+                "label": "Disable streams that fail checks",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "After a successful scrubber scan, rerun native auto-merge with fresh health state so promotions and failover recovery stay topology-aware."
+                "helper_text": "Let the managed checker disable channel entries whose streams fail its check. When off, it still records the results without disabling those entries.",
+                "visibility_provider": "guidelink_managed_checker",
+                "visibility_depends_on": [
+                  "settings.scrubber_id"
+                ]
               },
               {
-                "id": "settings.scrubber_check_method",
-                "label": "Scrubber Probe Method",
-                "type": "select",
-                "options": {
-                  "http": "HTTP",
-                  "ffprobe": "FFprobe"
-                },
-                "default": "http",
-                "helper_text": "Fast HTTP probing is usually enough; use FFprobe only when provider behavior requires it."
+                "type": "section",
+                "label": "Stream-check options",
+                "description": "Settings for the GuideLink-managed checker. Saved values are kept when you select a user-managed checker.",
+                "collapsible": true,
+                "collapsed": true,
+                "fields": [
+                  {
+                    "id": "settings.scrubber_scan_all",
+                    "label": "Include disabled channels in checks",
+                    "type": "boolean",
+                    "default": true,
+                    "helper_text": "Check disabled live channels as well as enabled ones, so backup selection can use their latest health results. Checking a recovered stream does not directly re-enable its entry."
+                  },
+                  {
+                    "id": "settings.scrubber_rebuild_failovers_after_scan",
+                    "label": "Rebuild backups after a successful scan",
+                    "type": "boolean",
+                    "default": true,
+                    "helper_text": "After the checker completes successfully, rerun m3u-editor's backup selection using the updated health results."
+                  },
+                  {
+                    "id": "settings.scrubber_check_method",
+                    "label": "Stream-check method",
+                    "type": "select",
+                    "options": {
+                      "http": "HTTP response check",
+                      "ffprobe": "Media probe (FFprobe)"
+                    },
+                    "default": "http",
+                    "helper_text": "Use an HTTP response check for a quick availability check, or FFprobe to inspect the media stream."
+                  },
+                  {
+                    "id": "settings.scrubber_probe_timeout",
+                    "label": "Stream-check timeout (seconds)",
+                    "type": "number",
+                    "default": 10,
+                    "helper_text": "Maximum time allowed for each stream check. Longer timeouts give slow streams more time to respond and can make a scan take longer."
+                  }
+                ],
+                "visibility_provider": "guidelink_managed_checker",
+                "visibility_depends_on": [
+                  "settings.scrubber_id"
+                ]
               },
               {
-                "id": "settings.scrubber_probe_timeout",
-                "label": "Scrubber Probe Timeout Seconds",
-                "type": "number",
-                "default": 10,
-                "helper_text": "Per-stream native scrubber timeout."
-              }
-            ]
-          },
-          {
-            "type": "section",
-            "label": "Matching",
-            "description": "Advanced matcher thresholds. Defaults are conservative and should normally be left alone.",
-            "fields": [
-              {
-                "id": "settings.fuzzy_threshold",
-                "label": "Fuzzy Threshold",
-                "type": "number",
-                "default": 90
-              },
-              {
-                "id": "settings.min_auto_score",
-                "label": "Minimum Auto Score",
-                "type": "number",
-                "default": 90
-              },
-              {
-                "id": "settings.min_auto_margin",
-                "label": "Minimum Auto Margin",
-                "type": "number",
-                "default": 12
-              },
-              {
-                "id": "settings.sort_floor_offset",
-                "label": "Sort Floor Offset",
-                "type": "number",
-                "default": 10
-              },
-              {
-                "id": "settings.min_alias_words",
-                "label": "Minimum Alias Words",
-                "type": "number",
-                "default": 2
-              },
-              {
-                "id": "settings.min_alias_chars",
-                "label": "Minimum Alias Characters",
-                "type": "number",
-                "default": 4
-              },
-              {
-                "id": "settings.min_set_tokens",
-                "label": "Minimum Set Tokens",
-                "type": "number",
-                "default": 2
-              },
-              {
-                "id": "settings.min_ratio_len_ratio",
-                "label": "Minimum Ratio Length Ratio",
-                "type": "number",
-                "default": 0.7
-              },
-              {
-                "id": "settings.min_ratio_score",
-                "label": "Minimum Ratio Score",
-                "type": "number",
-                "default": 90
-              },
-              {
-                "id": "settings.min_partial_len_ratio",
-                "label": "Minimum Partial Length Ratio",
-                "type": "number",
-                "default": 0.65
-              },
-              {
-                "id": "settings.min_partial_len",
-                "label": "Minimum Partial Length",
-                "type": "number",
-                "default": 5
-              },
-              {
-                "id": "settings.min_partial_ratio_score",
-                "label": "Minimum Partial Ratio Score",
-                "type": "number",
-                "default": 80
-              },
-              {
-                "id": "settings.max_short_token_len",
-                "label": "Maximum Short Token Length",
-                "type": "number",
-                "default": 2
-              },
-              {
-                "id": "settings.min_token_similarity",
-                "label": "Minimum Token Similarity",
-                "type": "number",
-                "default": 60
+                "id": "settings.include_scrubber_logs",
+                "label": "Include stream-health evidence in reports",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Include available stream-check history in channel availability and repair reports. This does not enable, disable or start stream checks."
               }
             ]
           }
@@ -988,7 +1135,7 @@
         "label": "Playlists",
         "model_label": "Assignment",
         "table": "plugin_guidelink_links",
-        "description": "Assign profiles to playlists.",
+        "description": "Assign profiles to playlists and choose which automatic tasks include them. Both the profile and its playlist assignment must be enabled. Clearing an assignment does not delete the playlist.",
         "export_formats": [],
         "create": false,
         "delete_behavior": "clear",
@@ -1041,18 +1188,18 @@
           },
           {
             "name": "enabled",
-            "label": "Enabled",
+            "label": "GuideLink enabled",
             "type": "boolean",
             "editable": true
           },
           {
             "name": "settings.run_sync",
-            "label": "Sync",
+            "label": "Automatic and batch syncs",
             "type": "boolean"
           },
           {
             "name": "settings.run_availability",
-            "label": "Availability",
+            "label": "Automatic and batch checks",
             "type": "boolean"
           },
           {
@@ -1071,11 +1218,11 @@
             "label_attribute": "name",
             "scope": "owned",
             "required": true,
-            "helper_text": "Prefilled from your playlists. This row controls GuideLink behavior for the selected playlist."
+            "helper_text": "Prefilled from your playlists. Choose the playlist this GuideLink assignment controls."
           },
           {
             "id": "extension_plugin_profile_id",
-            "label": "Profile",
+            "label": "GuideLink profile",
             "type": "table_select",
             "table": "plugin_guidelink_profiles",
             "value_column": "id",
@@ -1083,28 +1230,28 @@
             "enabled_only": true,
             "scope_plugin": true,
             "required": false,
-            "helper_text": "Choose an enabled GuideLink profile. Leave empty to keep the playlist unassigned."
+            "helper_text": "Choose an enabled profile, or leave blank to keep this playlist unassigned."
           },
           {
             "id": "enabled",
-            "label": "Enabled",
+            "label": "Use GuideLink for this playlist",
             "type": "boolean",
             "default": false,
-            "helper_text": "Enable this playlist assignment before setup, reports, sync, or schedules will use it."
+            "helper_text": "Allow this assignment to participate in GuideLink setup, reports and syncs. Turning it off keeps earlier playlist changes."
           },
           {
             "id": "settings.run_sync",
-            "label": "Run Sync",
+            "label": "Include in automatic and batch syncs",
             "type": "boolean",
             "default": true,
-            "helper_text": "Allow scheduled or assigned-playlist sync actions to include this playlist."
+            "helper_text": "Include this playlist in scheduled syncs and sync actions targeting assigned playlists."
           },
           {
             "id": "settings.run_availability",
-            "label": "Run Availability",
+            "label": "Include in automatic and batch checks",
             "type": "boolean",
             "default": true,
-            "helper_text": "Allow scheduled, playlist-sync hook, or assigned-playlist availability checks to include this playlist."
+            "helper_text": "Include this playlist in scheduled, post-import and assigned-playlist channel checks. An explicitly selected manual check can still run."
           }
         ]
       },
@@ -1180,16 +1327,16 @@
         "label": "Alias Sets",
         "model_label": "Alias Set",
         "table": "plugin_guidelink_alias_sets",
-        "description": "Choose read-only bundled defaults or create a custom set, then attach it to profiles. Use Preview Alias Set in the Actions menu to inspect its entries. Bundled data is replaced with the plugin ZIP.",
+        "description": "Shared collections of alternative channel names. Select these sets in a profile to use them for matching.",
         "export_formats": [],
         "columns": [
           {
             "name": "name",
-            "label": "Name"
+            "label": "Alias set"
           },
           {
             "name": "bundle_id",
-            "label": "Bundled Dataset"
+            "label": "Included alias dataset"
           },
           {
             "name": "country",
@@ -1197,24 +1344,25 @@
           },
           {
             "name": "enabled",
-            "label": "Enabled",
+            "label": "Available",
             "type": "boolean"
           }
         ],
         "fields": [
           {
             "id": "name",
-            "label": "Name",
+            "label": "Alias set name",
             "type": "text",
-            "required": true
+            "required": true,
+            "helper_text": "Give this shared collection of alternative channel names a recognisable name."
           },
           {
             "id": "bundle_id",
-            "label": "Bundled Defaults",
+            "label": "Included alias dataset",
             "type": "select",
             "options_provider": "guidelink_bundled_sets",
             "placeholder": "None — custom aliases",
-            "helper_text": "Choose a read-only dataset, or leave empty to manage this set in Aliases. Plugin updates replace bundled data directly. Preview its contents using Preview Alias Set."
+            "helper_text": "Choose a read-only dataset shipped with GuideLink, or leave blank to maintain your own names in Data → Aliases. Plugin updates replace bundled data. Inspect included names with Preview Alias Set."
           },
           {
             "id": "country",
@@ -1222,23 +1370,25 @@
             "type": "select",
             "options_provider": "guidelink_countries",
             "default": "uk",
-            "required": true
+            "required": true,
+            "helper_text": "Choose the country whose naming rules apply. Profiles using this set must use the same country."
           },
           {
             "id": "guide_epg_id",
-            "label": "Reference Guide EPG",
+            "label": "Reference programme guide",
             "type": "model_select",
             "model": "App\\Models\\Epg",
             "label_attribute": "name",
             "scope": "owned",
             "required": true,
-            "helper_text": "Used to choose channel targets. Profiles can reuse this set with guides containing the same stream IDs and matching channel names."
+            "helper_text": "Choose the guide used to select this set's target channels. Reusing it with another guide requires compatible channel identities."
           },
           {
             "id": "enabled",
-            "label": "Enabled",
+            "label": "Make this alias set available",
             "type": "boolean",
-            "default": true
+            "default": true,
+            "helper_text": "Allow profiles to use this set. Remove a disabled set from profiles that still select it before running them."
           }
         ]
       },
@@ -1247,16 +1397,16 @@
         "label": "Aliases",
         "model_label": "Alias",
         "table": "plugin_guidelink_aliases",
-        "description": "Editable alternative names for custom sets. Read-only bundled defaults are not stored here; use Preview Alias Set to inspect them.",
+        "description": "Alternative channel names for custom alias sets. Included datasets are read-only; inspect them with Preview Alias Set.",
         "export_formats": [],
         "columns": [
           {
             "name": "target_stream_id",
-            "label": "Target Stream Id"
+            "label": "Target guide channel"
           },
           {
             "name": "aliases",
-            "label": "Aliases",
+            "label": "Alternative channel names",
             "type": "json"
           },
           {
@@ -1268,35 +1418,37 @@
         "fields": [
           {
             "id": "alias_set_ids",
-            "label": "Custom Alias Sets",
+            "label": "Custom alias sets",
             "type": "select",
             "required": true,
             "multiple": true,
-            "helper_text": "Share this entry across compatible custom sets. Bundled defaults are read-only and cannot be edited here.",
+            "helper_text": "Add this entry to one or more compatible custom sets. Shared edits affect every selected set.",
             "options_provider": "guidelink_custom_alias_sets"
           },
           {
             "id": "target_stream_id",
-            "label": "Target Guide Channel",
+            "label": "Target guide channel",
             "type": "select",
             "options_provider": "guidelink_alias_targets",
             "depends_on": [
               "alias_set_ids"
             ],
-            "required": true
+            "required": true,
+            "helper_text": "Choose the channel these alternative names should identify."
           },
           {
             "id": "aliases",
-            "label": "Alternative Channel Names",
+            "label": "Alternative channel names",
             "type": "tags",
             "required": true,
-            "helper_text": "One full channel name per tag. Add +1 names separately against their own guide entry."
+            "helper_text": "Enter one complete name per tag. Add +1 channel names against their own +1 guide entry."
           },
           {
             "id": "enabled",
-            "label": "Enabled",
+            "label": "Use these alternative names",
             "type": "boolean",
-            "default": true
+            "default": true,
+            "helper_text": "Include this entry when matching with its selected custom sets."
           }
         ]
       }
@@ -1322,72 +1474,99 @@
     {
       "type": "section",
       "label": "Scheduling",
+      "description": "Choose which automatic tasks run. Channel checks report availability; only a sync configured to Apply changes updates playlists.",
       "fields": [
         {
           "id": "schedule_enabled",
-          "label": "Enable Scheduled Availability Report",
+          "label": "Check channels on a schedule",
           "type": "boolean",
-          "default": false
-        },
-        {
-          "id": "schedule_cron",
-          "label": "Availability Cron",
-          "type": "text",
-          "default": "0 * * * *"
+          "default": false,
+          "helper_text": "Run availability reports for eligible playlist assignments at the channel-check schedule."
         },
         {
           "id": "sync_schedule_enabled",
-          "label": "Enable Scheduled Sync",
+          "label": "Sync playlists on a schedule",
           "type": "boolean",
-          "default": false
+          "default": false,
+          "helper_text": "Run GuideLink sync for eligible playlist assignments at the sync schedule."
         },
         {
           "id": "sync_schedule_mode",
-          "label": "Scheduled Sync Mode",
+          "label": "Scheduled sync behavior",
           "type": "select",
           "options": {
-            "preview": "Preview only",
-            "apply": "Apply writes"
+            "preview": "Preview changes",
+            "apply": "Apply changes"
           },
-          "default": "preview"
-        },
-        {
-          "id": "sync_cron",
-          "label": "Sync Cron",
-          "type": "text",
-          "default": "0 3 * * *"
+          "default": "preview",
+          "helper_text": "Choose Preview changes to record proposed edits, or Apply changes to update playlists."
         },
         {
           "id": "source_refresh_schedule_enabled",
-          "label": "Enable Scheduled Source Refresh",
+          "label": "Refresh website lineups on a schedule",
           "type": "boolean",
-          "default": false
+          "default": false,
+          "helper_text": "Refresh website lineups used by enabled profiles at the source-refresh schedule. Each profile may reuse a recent saved lineup instead of downloading again."
         },
         {
-          "id": "source_refresh_cron",
-          "label": "Source Refresh Cron",
-          "type": "text",
-          "default": "30 2 * * *"
+          "type": "section",
+          "label": "Schedule times",
+          "description": "Cron expressions use m3u-editor's scheduler timezone. Changing a schedule does not immediately start a run.",
+          "collapsible": true,
+          "collapsed": true,
+          "fields": [
+            {
+              "id": "schedule_cron",
+              "label": "Channel-check schedule",
+              "type": "text",
+              "default": "0 * * * *",
+              "helper_text": "Cron expression for availability reports. The default runs once per hour."
+            },
+            {
+              "id": "sync_cron",
+              "label": "Playlist-sync schedule",
+              "type": "text",
+              "default": "0 3 * * *",
+              "helper_text": "Cron expression for GuideLink sync. The default runs daily at 03:00 in the scheduler's timezone."
+            },
+            {
+              "id": "source_refresh_cron",
+              "label": "Lineup-refresh schedule",
+              "type": "text",
+              "default": "30 2 * * *",
+              "helper_text": "Cron expression for source refreshes. The default runs daily at 02:30 in the scheduler's timezone."
+            }
+          ]
         }
       ]
     },
     {
       "type": "section",
-      "label": "Native Alerts",
+      "label": "Alerts",
+      "description": "Use m3u-editor's notifications and configured alert destinations.",
       "fields": [
         {
           "id": "native_alerts_enabled",
-          "label": "Enable Native Alerts",
+          "label": "Notify about problems and recovery",
           "type": "boolean",
           "default": true,
-          "helper_text": "Report failures, last-good cache fallback and recovery in m3u-editor notifications and its configured Discord, Slack or Telegram alert channels. Includes preview and scheduled report failures."
+          "helper_text": "Report failures, saved-lineup fallback and recovery through m3u-editor notifications and its configured alert channels. Preview and scheduled report failures are included."
         },
         {
-          "id": "alert_reminder_hours",
-          "label": "Alert Reminder Hours",
-          "type": "number",
-          "default": 24,
-          "helper_text": "Repeat an unresolved incident only when it is observed again after this interval (1–168 hours). New incidents, severity escalations and recoveries notify immediately."
+          "type": "section",
+          "label": "Reminder options",
+          "description": "An elapsed interval alone does not send a reminder; GuideLink must observe the problem again.",
+          "collapsible": true,
+          "collapsed": true,
+          "fields": [
+            {
+              "id": "alert_reminder_hours",
+              "label": "Unresolved-problem reminder interval (hours)",
+              "type": "number",
+              "default": 24,
+              "helper_text": "Send another reminder when the same problem is seen after this interval (1–168 hours). New problems, worsening incidents and recovery are reported immediately. Recovery also follows the host notification preferences."
+            }
+          ]
         }
       ]
     }

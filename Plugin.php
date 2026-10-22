@@ -2,6 +2,7 @@
 
 namespace AppLocalPlugins\GuideLink;
 
+use App\Models\ChannelScrubber;
 use App\Plugins\Contracts\ChannelProcessorPluginInterface;
 use App\Plugins\Contracts\HookablePluginInterface;
 use App\Plugins\Contracts\LifecyclePluginInterface;
@@ -21,9 +22,11 @@ use AppLocalPlugins\GuideLink\Actions\RefreshSourceCacheAction;
 use AppLocalPlugins\GuideLink\Actions\RepairAvailabilityAction;
 use AppLocalPlugins\GuideLink\Actions\SetupChecklistAction;
 use AppLocalPlugins\GuideLink\Actions\SyncPlaylistAction;
+use AppLocalPlugins\GuideLink\Scrapers\ScraperRegistry;
 use AppLocalPlugins\GuideLink\Services\ChannelQuarantineService;
 use AppLocalPlugins\GuideLink\Services\NativeAlertService;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
+use AppLocalPlugins\GuideLink\Services\ScrubberSetupService;
 use AppLocalPlugins\GuideLink\Support\DynamicOptionProviders;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\PlaylistOperationFailed;
@@ -101,6 +104,36 @@ class Plugin implements ChannelProcessorPluginInterface, HookablePluginInterface
     public function selectOptions(string $provider, PluginSelectOptionsContext $context): array
     {
         return DynamicOptionProviders::options($provider, $context);
+    }
+
+    public function isFieldVisible(string $provider, PluginSelectOptionsContext $context): bool
+    {
+        if ($provider === 'guidelink_download_key') {
+            $method = (string) $context->value('settings.scraping_api', 'direct_http');
+
+            return isset(ScraperRegistry::definitions()[$method]) && (new ScraperRegistry)->requiresApiKey($method);
+        }
+
+        if ($provider !== 'guidelink_managed_checker' || $context->user === null) {
+            return false;
+        }
+
+        $selection = $context->value('settings.scrubber_id');
+        if ($selection === null || $selection === '') {
+            return true;
+        }
+
+        $scrubberId = Options::nullableInt($selection);
+        if ($scrubberId === null || $scrubberId < 1) {
+            return false;
+        }
+
+        $scrubber = ChannelScrubber::query()
+            ->where('user_id', $context->user->id)
+            ->whereHas('playlist', fn ($query) => $query->where('user_id', $context->user->id))
+            ->find($scrubberId);
+
+        return (new ScrubberSetupService)->isManagedScrubber($scrubber);
     }
 
     /**

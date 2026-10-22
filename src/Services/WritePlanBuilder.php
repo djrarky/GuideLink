@@ -5,23 +5,46 @@ namespace AppLocalPlugins\GuideLink\Services;
 use App\Models\Group;
 use App\Models\Playlist;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
-use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use AppLocalPlugins\GuideLink\Support\MatchDecision;
 
+/**
+ * Translate confirmed matches into proposed metadata differences, without writes.
+ * NativeMetadata uses database column names; MetadataView uses report labels.
+ * native_columns is the intended state, native_changes is only changed fields,
+ * and native_originals is the raw before-state for those changed fields.
+ * A missing_group requires group creation and replanning before ChannelWriter.
+ *
+ * @phpstan-import-type SourceEntry from ParsedSourceLoader
+ * @phpstan-import-type MatchRow from ChannelMatcher
+ * @phpstan-import-type ExcludedRow from ScopeFilter
+ * @phpstan-import-type DecisionState from ChannelAttributes
+ * @phpstan-import-type NativeMetadata from ChannelAttributes
+ *
+ * @phpstan-type MetadataView array{
+ *     title: string, name: string, stream_id: string,
+ *     channel_number: int|float|string, sort_order: int|float|string|null,
+ *     group_id: int|null, group: string, epg_channel_id: int|string|null, logo_type: string|null
+ * }
+ * @phpstan-type WritePlanRow array{
+ *     playlist_id: int, channel_id: int, channel_uuid: string,
+ *     decision: string, tier: int|'', score: int,
+ *     current: MetadataView, desired: MetadataView,
+ *     native_columns: NativeMetadata, native_changes: NativeMetadata,
+ *     native_originals: NativeMetadata, decision_state: DecisionState,
+ *     changes: array<string, array{from: mixed, to: mixed}>, missing_group: string|null
+ * }
+ */
 class WritePlanBuilder
 {
-    public function __construct(private readonly CountryRulesRepository $countryRules) {}
-
     /**
-     * @param  array<int, array<string, mixed>>  $matchRows
+     * @param  list<MatchRow>  $matchRows
      * @param  array<string, Group>  $groupsByName
-     * @param  array<string, mixed>  $rules
      * @param  array<int, int>  $guideChannelIds
      * @param  array<string, true>  $preservedGroupKeys
-     * @return array<int, array<string, mixed>>
+     * @return list<WritePlanRow>
      */
-    public function rows(array $matchRows, array $groupsByName, array $rules, array $guideChannelIds = [], string $logoSource = 'preserve', array $preservedGroupKeys = []): array
+    public function rows(array $matchRows, array $groupsByName, array $guideChannelIds = [], string $logoSource = 'preserve', array $preservedGroupKeys = []): array
     {
         $rows = [];
 
@@ -123,10 +146,10 @@ class WritePlanBuilder
     }
 
     /**
-     * @param  array<int, array<string, mixed>>  $matchRows
-     * @param  array<int, array<string, mixed>>  $writePlan
-     * @param  array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id?: string, guide_valid?: bool}>  $sourceEntries
-     * @param  array<int, array<string, mixed>>  $excludedRows
+     * @param  list<MatchRow>  $matchRows
+     * @param  list<WritePlanRow>  $writePlan
+     * @param  list<SourceEntry>  $sourceEntries
+     * @param  list<ExcludedRow>  $excludedRows
      * @return array<string, mixed>
      */
     public function summary(

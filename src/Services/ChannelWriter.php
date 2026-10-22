@@ -10,10 +10,16 @@ use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Apply one channel at a time after locking and comparing the plan's snapshots.
+ * Successful rows commit independently; a later failure does not undo them.
+ *
+ * @phpstan-import-type WritePlanRow from WritePlanBuilder
+ */
 class ChannelWriter
 {
     /**
-     * @param  array<int, array<string, mixed>>  $writePlan
+     * @param  list<WritePlanRow>  $writePlan
      * @return array{channels_written: int, channels_skipped: int, channels_failed: int, aborted: bool, written_ids: array<int, int>, errors: array<int, string>, unmanaged_channels_disabled: int}
      */
     public function apply(array $writePlan, PluginExecutionContext $context): array

@@ -23,12 +23,11 @@ class GroupSyncService
 
     /**
      * @param  array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id?: string}>  $sourceEntries
-     * @param  array<string, mixed>  $rules
      * @param  array<string, Group>  $groupsByName
      * @param  array<string, mixed>  $payload
      * @return array<int, array<string, mixed>>
      */
-    public function plan(array $sourceEntries, array $rules, array $groupsByName, array $payload = []): array
+    public function plan(array $sourceEntries, array $groupsByName, array $payload = []): array
     {
         $rows = [];
         $scope = new ScopeFilter($this->countryRules);
@@ -270,7 +269,7 @@ class GroupSyncService
                 // Serialize creates per playlist, then recheck the same managed-group
                 // identity rules used during planning before inserting anything.
                 Playlist::query()->where('user_id', $playlist->user_id)->whereKey($playlist->id)->lockForUpdate()->firstOrFail();
-                $groups = (new ChannelRepository($this->countryRules))->groupsByName($playlist, []);
+                $groups = (new ChannelRepository)->groupsByName($playlist);
                 $group = $groups[$row['group_key']] ?? new Group;
                 if ($group->exists) {
                     $group = Group::withTrashed()->whereKey($group->id)->lockForUpdate()->firstOrFail();

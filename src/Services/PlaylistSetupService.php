@@ -58,7 +58,7 @@ class PlaylistSetupService
     public function auditRows(Playlist $playlist, array $desired): array
     {
         if (! $desired['managed']) {
-            return [$this->row('info', 'Playlist layout management', 'Layout settings are unchanged. Enable Let GuideLink Manage Playlist Layout in the assigned profile to protect guide order and numbers.')];
+            return [$this->row('info', 'Playlist layout management', 'Layout and import settings are unchanged. Enable Manage playlist layout & imports in the assigned profile to apply its ordering, numbering and live-import choices.')];
         }
 
         $rows = [];

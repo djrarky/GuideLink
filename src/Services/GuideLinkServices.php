@@ -4,8 +4,25 @@ namespace AppLocalPlugins\GuideLink\Services;
 
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 
+/**
+ * Factory owned by one action instance (including its playlist batch).
+ * Plugin dispatch creates a fresh action; this must not be a process singleton.
+ * Rules are parsed once per country. Guides, sources and matching reuse only
+ * their last derived result, comparing complete inputs after current data reads.
+ * Database writers and persistent source-cache accessors remain independent.
+ */
 class GuideLinkServices
 {
+    private ?CountryRulesRepository $rules = null;
+
+    private ?GuideMapService $guides = null;
+
+    private ?ParsedSourceLoader $sources = null;
+
+    private ?ChannelMatcher $matcher = null;
+
+    private ?CountryRulesRepository $matcherRules = null;
+
     public function autoMergeSetup(): AutoMergeSetupService
     {
         return new AutoMergeSetupService;
@@ -18,12 +35,17 @@ class GuideLinkServices
 
     public function channelMatcher(CountryRulesRepository $countryRules): ChannelMatcher
     {
-        return new ChannelMatcher($countryRules);
+        if ($this->matcherRules !== $countryRules) {
+            $this->matcherRules = $countryRules;
+            $this->matcher = new ChannelMatcher($countryRules);
+        }
+
+        return $this->matcher;
     }
 
-    public function channelRepository(CountryRulesRepository $countryRules): ChannelRepository
+    public function channelRepository(): ChannelRepository
     {
-        return new ChannelRepository($countryRules);
+        return new ChannelRepository;
     }
 
     public function channelWriter(): ChannelWriter
@@ -38,7 +60,7 @@ class GuideLinkServices
 
     public function countryRules(): CountryRulesRepository
     {
-        return new CountryRulesRepository;
+        return $this->rules ??= new CountryRulesRepository;
     }
 
     public function groupSync(CountryRulesRepository $countryRules): GroupSyncService
@@ -48,12 +70,16 @@ class GuideLinkServices
 
     public function guideMaps(): GuideMapService
     {
-        return new GuideMapService;
+        return $this->guides ??= new GuideMapService;
     }
 
     public function parsedSourceLoader(?SourceCacheService $cache = null): ParsedSourceLoader
     {
-        return new ParsedSourceLoader($cache ?? $this->sourceCache());
+        if ($cache !== null) {
+            return new ParsedSourceLoader($cache, $this->countryRules());
+        }
+
+        return $this->sources ??= new ParsedSourceLoader($this->sourceCache(), $this->countryRules());
     }
 
     public function playlistBatchRunner(): PlaylistBatchRunner
@@ -111,8 +137,8 @@ class GuideLinkServices
         );
     }
 
-    public function writePlans(CountryRulesRepository $countryRules): WritePlanBuilder
+    public function writePlans(): WritePlanBuilder
     {
-        return new WritePlanBuilder($countryRules);
+        return new WritePlanBuilder;
     }
 }

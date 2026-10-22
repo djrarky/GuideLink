@@ -200,7 +200,7 @@ class SetupChecklistService
                     'region' => $config['region'],
                     'source_cache_path' => $lastGood['path'],
                     'source_channels' => $entries,
-                    'source_cache_fresh' => $this->sourceCache->isFresh($config),
+                    'source_cache_fresh' => $this->sourceCache->snapshotIsFresh($config, $lastGood),
                     'source_fetched_at' => $lastGood['metadata']['fetched_at'] ?? null,
                 ],
             );

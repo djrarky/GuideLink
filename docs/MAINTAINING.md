@@ -24,6 +24,148 @@ The host must support dynamic plugin select options for the provider, country,
 source, and scraper fields. The plugin still validates those manifest contracts
 locally so stale static option lists are not reintroduced.
 
+## Following A Sync Through The Code
+
+Start with [SyncPlaylistAction](../src/Actions/SyncPlaylistAction.php).
+`Plugin.php` creates an action for each dispatch. `PlaylistBatchRunner` resolves
+the selected assignments and calls the action once per playlist, using the same
+action's `GuideLinkServices` factory throughout the batch.
+
+| Stage | Main code | Responsibility |
+| --- | --- | --- |
+| Resolve inputs | `PlaylistRunResolver`, `PlaylistResolver`, `GuideMapService` | Resolve the profile, check playlist/guide access and reject ambiguous guide mappings. |
+| Prepare source | `SourceCacheService`, `SourceRefreshService`, `ParsedSourceLoader`, `ProfileAliasResolver` | Validate source data, add current guide identities and apply valid profile aliases. |
+| Select and match | `ChannelRepository`, `ScopeFilter`, `ChannelMatcher` | Read live channels, record exclusions and produce matching decisions without editing channels. |
+| Plan changes | `WritePlanBuilder`, `GroupSyncService`, `ChannelQuarantineService` | Calculate metadata differences, managed groups, quarantine and eligible provider-group cleanup. |
+| Apply native settings | `PlaylistSetupService`, `AutoMergeSetupService`, `ScrubberSetupService` | Apply profile configuration and save its audit records. Sync does not start a scan or failover rebuild. |
+| Apply channel policy | `GroupSyncService`, `ChannelWriter`, `ChannelQuarantineService` | Ensure destination groups exist, update metadata, then quarantine channels and disable eligible provider groups. |
+| Report | `WritePlanBuilder::summary`, `RunResultRepository` | Persist decisions and plans, and return counts, errors and cancellation status. |
+
+Preview follows preparation and planning, previews native settings and saves
+results. It may populate a missing scraper cache, but does not apply native
+settings, channel metadata, group or quarantine changes. Ordinary sync reuses a
+valid last-good cache even when it is old; freshness-based fetching belongs to
+the refresh/setup actions. A corrupt or undersized existing cache fails sync.
+
+Keep these ordering constraints visible when editing the action:
+
+- Quarantine uses all matching and exclusion decisions, including channels with
+  no metadata differences. A missing write-plan row does not mean preservation.
+- Creating a destination group requires rebuilding the channel write plan with
+  its real ID. Preview can legitimately contain a `missing_group` instead.
+- Group setup failure stops channel writes. Failed or cancelled metadata writes
+  block quarantine; failed or cancelled quarantine blocks provider-group cleanup.
+- Provider-group cleanup rechecks current membership in the update query, so a
+  newly imported or unquarantined channel prevents its group being disabled.
+
+For matching changes, start at `ChannelMatcher::match` and `matchName`. The
+ordered stages are policy: fingerprint evidence, exact/explicit aliases and
+structured name rules precede fuzzy scoring. Guide-only fallback can use exact
+or structured matches, but never fuzzy scoring. `MatchDecision` defines which
+decisions are confirmed and which exclusions preserve a channel.
+
+## Transactions And Partial Results
+
+A sync has several commit boundaries. It is not one transaction around the
+whole playlist or batch.
+
+| Work | Commit boundary | Consequence of a later failure |
+| --- | --- | --- |
+| Native settings and their audit rows | One transaction in `SyncPlaylistAction`; playlist settings are saved together | Successful configuration remains if channel processing later fails. |
+| Managed group creation/restoration/update | One transaction per group in `GroupSyncService::applyRow` | Earlier group changes remain; a failed group stops subsequent channel writes. |
+| Channel metadata | One transaction per channel in `ChannelWriter` | Earlier successful rows remain; failed rows are counted and reported. |
+| Quarantine | One transaction per channel, including the ownership record | Recorded merge policy and channel flags commit or roll back together. Release restores merge eligibility without enabling the channel. |
+| Provider-group disablement | One transaction per batch of up to 250 groups | Completed batches remain; changed or ineligible groups are reported as failures. |
+| Run results | One transaction per `RunResultRepository::replace` call, inserting buffers of 250 rows | A replacement rolls back as a unit. When called inside native-settings application, it also depends on the outer transaction. |
+
+Channel plans carry two before-states: identity/scope evidence and raw metadata
+values. Writers reload and lock current models before comparing these snapshots.
+Do not replace this with a timestamp check or save the partially selected models
+used for preparation. `ChannelAttributes::readColumns` must retain every field
+needed by planning and the concurrent-edit checks.
+
+Cancellation stops subsequent work; it does not undo committed stages. Results
+are saved at explicit checkpoints, including the group-setup failure path. An
+exception before final result persistence can leave earlier native audit rows
+and committed changes without a final channel report. Diagnose using the run's
+logs, saved results and current state together.
+
+Source-cache publication is a separate filesystem operation. Refresh uses a
+shared lock and compares revisions before publishing; `writeLastGood` replaces
+the file using a temporary file and rename. Database rollback does not revert
+that file. Raw scraper responses are never persisted.
+
+## Data Contracts At Service Boundaries
+
+The PHPDoc aliases below describe existing arrays; they add no runtime wrapper
+or dependency. Each shape is declared on its producer and imported by consumers
+using `@phpstan-import-type`. Update the producer's definition when adding a
+field, and check consumers and result exports. Optional keys use `?`; report
+cells often use `''`, while absent match results use `null`.
+
+| Contract | Definition | Meaning |
+| --- | --- | --- |
+| `CachedSourceEntry`, `SourceSnapshot` | [SourceCacheService](../src/Services/SourceCacheService.php) | Validated persisted source rows, fetch metadata and path; validation uses the current configuration's minimum count. |
+| `SourceEntry`, `PreparedSourceEntry` | [ParsedSourceLoader](../src/Services/ParsedSourceLoader.php) | Source identity and aliases; preparation supplies `stream_id` and `guide_valid`, and can add guide-only rows and profile aliases. |
+| `ChannelReportRow` | [ChannelAttributes](../src/Support/ChannelAttributes.php) | Display fields shared by matching, scope exclusions and availability. |
+| `DecisionState`, `NativeMetadata` | [ChannelAttributes](../src/Support/ChannelAttributes.php) | Raw identity/scope evidence and editable metadata snapshots used to detect intervening changes. |
+| `MatchResult`, `MatchRow` | [ChannelMatcher](../src/Services/ChannelMatcher.php) | A decision and its candidates; the report row also carries internal `_...` snapshots for planning. |
+| `ExcludedRow` | [ScopeFilter](../src/Services/ScopeFilter.php) | An exclusion reason and display fields, without a match's internal write snapshots. |
+| `MetadataView`, `WritePlanRow` | [WritePlanBuilder](../src/Services/WritePlanBuilder.php) | Display-level before/after values, native column changes and their expected raw originals. |
+| `FailoverSummary` | [ChannelRepository](../src/Services/ChannelRepository.php) | Deduplicated valid backups; summary maps are keyed by the primary channel ID. |
+
+`native_columns` describes the intended native metadata state;
+`native_changes` contains only fields to write; `native_originals` contains the
+raw before-values for those fields. `decision_state` separately protects the
+identity and scope evidence that justified the change. Preserve that distinction
+when adding a metadata field.
+
+## Cache Ownership And Lifetime
+
+`GuideLinkServices` belongs to an action instance. Normal plugin dispatch creates
+a fresh instance for the next action. Keep it out of process-wide singleton
+bindings: country rules deliberately assume the installed pack is fixed during
+that action. The derived caches below retain only their most recent inputs and
+result, rather than one entry for every playlist.
+
+| Data | Lifetime and refresh rule |
+| --- | --- |
+| Parsed source files | Persistent across runs, keyed by country/provider/source/region. Every reader validates structure and the profile's minimum count. Freshness is checked separately when required. |
+| Prepared source snapshot | One playlist sync; preparation passes its validated snapshot to the loader. The next playlist reads source data again. |
+| Parsed country rules | Once per country per `CountryRulesRepository` instance, normally shared for an action's batch. A new action reads the installed pack again. |
+| Guide map | Last result on `GuideMapService`. Access and current guide rows are checked before comparing the complete input; parent timestamps alone are insufficient. |
+| Guide aliases and profile aliases | Last preparation on `ParsedSourceLoader` / `ProfileAliasResolver`. Current source data, selected sets and guide validation are obtained before reuse. |
+| Matcher index | Last source entries, country rules and thresholds on `ChannelMatcher`. Any input difference rebuilds it. |
+| Failover summaries | Local to an availability report and passed explicitly to both analyses. A later report loads current channels and backups. |
+| Scrubber column list | Local to each `apply` call; the next call reads the schema again. |
+
+In-memory reuse saves derivation work, not ownership checks or current database
+reads. Do not key it only by profile ID, playlist ID or `updated_at`. The
+`PreparationReuseTest`, `GuideMapTest` and `ProfileAliasesTest` suites cover edits
+between calls, including changes that leave timestamps unchanged.
+
+## Choosing Where To Make A Change
+
+- **Profile options:** start with `plugin.json`, `ProfileDefaults` and
+  `ProfileSettings` (or `SourceSettings` for source options). Update configuration
+  help and the relevant form/contract tests. Keep saved keys stable when renaming
+  user-facing labels.
+- **Matching rules:** use `ChannelMatcher` and country-pack rules; exercise
+  `MatchingSafetyTest`, including ambiguity, regional and timeshift cases.
+- **Metadata writes:** update `ChannelAttributes`, `WritePlanBuilder` and
+  `ChannelWriter` together. Use `ChannelWriteSafetyTest` and `SyncStabilityTest`
+  to cover both projected reads and locked rereads.
+- **Scope or disablement:** trace `ScopeFilter`, `MatchDecision`, quarantine and
+  group planning together. Use `ScopeSafetyTest`, `QuarantineSafetyTest` and
+  `GroupPlanningTest` to preserve the distinction between exclusion and protection.
+- **Reuse or freshness:** keep ownership and lifetime explicit, and extend the
+  relevant reuse/cache test with a second call after changing the input.
+
+For documentation-only changes, check formatting, PHPDoc syntax and links; no
+new behaviour tests are needed. For runtime changes, use the focused validation
+gates below and keep the existing safety checks visible rather than introducing
+a generic pipeline or cache framework.
+
 ## Host Plugin Contract
 
 When reviewing plugin-system changes, check GuideLink against the
@@ -168,7 +310,25 @@ cd ../podman
   /var/www/html/plugins/guidelink/tests
 ```
 
-Latest workspace run on 2026-10-21: the full plugin suite passed with 206 tests
+Release 0.1.3 validation on 2026-10-22 used PHP 8.4 and isolated databases:
+
+- Current upstream host `7ce0d553d5915636a89e4ba2ac8e5a429970fedf`:
+  226 tests / 1,528 assertions passed on PostgreSQL 16. Three tests for optional
+  host visibility/caching APIs were skipped; ordinary profile saving and the
+  all-fields-visible fallback were exercised.
+- Host PR #1655 at `b3e94635f1b918e77b1406585469ee0203287c43`:
+  229 tests / 1,556 assertions passed on SQLite, including conditional fields and
+  retained hidden settings. The revised form and scrubber query-count tests also
+  passed on PostgreSQL.
+- All 112 PHP files passed lint and Pint. Standalone validation and all nine
+  release-tool tests passed. The packaged 0.1.2-to-0.1.3 update passed reviewed
+  installation, trust and integrity checks while preserving a saved profile and
+  playlist assignment. The isolated install test used the host's fake scanner.
+
+Form interactions were checked through Livewire integration tests. No new manual
+browser walkthrough, live scraping or production load benchmark was performed.
+
+For 0.1.2 on 2026-10-21, the full plugin suite passed with 206 tests
 and 1,324 assertions on each of SQLite and PostgreSQL 16 under PHP 8.4, using the m3u-editor reference commit
 `aa550eeae5a0b1f0907907a63abe1c566025a978` and isolated PostgreSQL 16 and SQLite
 test databases.

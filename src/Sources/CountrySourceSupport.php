@@ -3,11 +3,24 @@
 namespace AppLocalPlugins\GuideLink\Sources;
 
 use AppLocalPlugins\GuideLink\Support\JsonFile;
+use Illuminate\Container\Attributes\Scoped;
 
+#[Scoped]
 final class CountrySourceSupport
 {
+    private ?array $countryCache = null;
+
+    private ?array $packCache = null;
+
     /** @return array<string, array{key: string, name: string, path: string}> */
     public static function countries(): array
+    {
+        return function_exists('app')
+            ? (app(self::class)->countryCache ??= self::loadCountries())
+            : self::loadCountries();
+    }
+
+    private static function loadCountries(): array
     {
         $countries = [];
         foreach (glob(__DIR__.'/Countries/*', GLOB_ONLYDIR) ?: [] as $directory) {
@@ -28,6 +41,13 @@ final class CountrySourceSupport
      * @return array<int, array{country: string, provider: string, label: string, sources: array<int, string>, path: string}>
      */
     public static function packs(): array
+    {
+        return function_exists('app')
+            ? (app(self::class)->packCache ??= self::loadPacks())
+            : self::loadPacks();
+    }
+
+    private static function loadPacks(): array
     {
         $packs = [];
         foreach (self::countries() as $country) {

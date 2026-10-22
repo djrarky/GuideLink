@@ -11,6 +11,13 @@ use AppLocalPlugins\GuideLink\Support\ProfileSettings;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Coordinate one playlist at a time: prepare, plan, apply, then report.
+ * See docs/MAINTAINING.md for commit boundaries and partial-result handling.
+ *
+ * @phpstan-import-type SourceEntry from \AppLocalPlugins\GuideLink\Services\ParsedSourceLoader
+ * @phpstan-import-type SourceSnapshot from \AppLocalPlugins\GuideLink\Services\SourceCacheService
+ */
 class SyncPlaylistAction extends GuideLinkAction
 {
     /**
@@ -34,13 +41,13 @@ class SyncPlaylistAction extends GuideLinkAction
     {
         $countryRules = $this->services->countryRules();
         $playlistResolver = $this->services->playlistResolver();
-        $channelRepository = $this->services->channelRepository($countryRules);
+        $channelRepository = $this->services->channelRepository();
         $parsedSourceLoader = $this->services->parsedSourceLoader();
         $guideMaps = $this->services->guideMaps();
         $scopeFilter = $this->services->scopeFilter($countryRules);
         $matcher = $this->services->channelMatcher($countryRules);
         $groupSync = $this->services->groupSync($countryRules);
-        $writePlans = $this->services->writePlans($countryRules);
+        $writePlans = $this->services->writePlans();
         $channelWriter = $this->services->channelWriter();
         $quarantine = $this->services->channelQuarantine();
         $logoSource = ProfileSettings::logoSource($payload);
@@ -48,6 +55,8 @@ class SyncPlaylistAction extends GuideLinkAction
 
         $context->checkpoint(5, $context->dryRun ? 'Preparing sync playlist preview.' : 'Preparing sync playlist apply run.', log: true);
 
+        // Resolve and validate inputs before planning any native changes.
+        // A first run may populate source cache, including during preview.
         $playlist = $playlistResolver->target($payload, $context);
         $rules = $countryRules->resolve($payload, []);
         $guide = $guideMaps->resolve($payload, $context);
@@ -57,8 +66,10 @@ class SyncPlaylistAction extends GuideLinkAction
         $playlistConfig = $playlistSetup->desiredConfig($playlist, $payload, $context);
         $autoMergeConfig = $autoMerge->desiredConfig($playlist, $payload, $context);
         $scrubberConfig = $scrubber->desiredConfig($playlist, $payload, $context);
-        $sourceCache = $this->prepareSourceCache($payload, $context);
-        $sourceEntries = $parsedSourceLoader->entries($payload, $context, $guide['map'], $guide['aliases']);
+        $preparedSource = $this->prepareSourceCache($payload, $context);
+        $sourceCache = $preparedSource['summary'] ?? null;
+        $sourceEntries = $parsedSourceLoader->entries($payload, $context, $guide['map'], $guide['aliases'], $preparedSource['snapshot'] ?? null);
+        unset($preparedSource);
 
         if ($sourceEntries === []) {
             return PluginActionResult::failure(
@@ -80,8 +91,8 @@ class SyncPlaylistAction extends GuideLinkAction
         $channels = $channelRepository->liveChannels($playlist, true, includeFailovers: false);
         $scopePayload = $this->scopePayload($payload, $sourceEntries);
         $scope = $scopeFilter->split($playlist, $channels, $scopePayload, [], $rules);
-        $groupsByName = $channelRepository->groupsByName($playlist, $rules);
-        $groupPlan = $groupSync->plan($sourceEntries, $rules, $groupsByName, $payload);
+        $groupsByName = $channelRepository->groupsByName($playlist);
+        $groupPlan = $groupSync->plan($sourceEntries, $groupsByName, $payload);
         $preservedGroupKeys = array_fill_keys(array_column(array_filter(
             $groupPlan, fn (array $row): bool => $row['action'] === 'preserve',
         ), 'group_key'), true);
@@ -101,7 +112,9 @@ class SyncPlaylistAction extends GuideLinkAction
             $rules,
             $context,
         );
-        $writePlan = $writePlans->rows($matchRows, $groupsByName, $rules, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+        $writePlan = $writePlans->rows($matchRows, $groupsByName, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+        // Quarantine follows matching decisions, including unchanged channels;
+        // an empty metadata diff does not mean a channel is out of scope.
         $decisions = [...$matchRows, ...$scope['excluded']];
         $quarantinePlan = $quarantine->plan(
             $playlist, $channels, $decisions,
@@ -124,6 +137,8 @@ class SyncPlaylistAction extends GuideLinkAction
             ? 'Previewing native playlist layout, auto-merge and scrubber settings.'
             : 'Applying native playlist layout, auto-merge and scrubber settings.', log: true);
 
+        // Native configuration and its audit rows commit together. Later group,
+        // channel and quarantine writes have their own transaction boundaries.
         $nativeSettings = DB::transaction(function () use ($playlist, $autoMerge, $scrubber, $playlistSetup, $autoMergeConfig, $scrubberConfig, $playlistConfig, $context, $runResults): array {
             if (! $context->dryRun) {
                 $playlist = $playlist->newQuery()->where('user_id', $playlist->user_id)->whereKey($playlist->id)->lockForUpdate()->firstOrFail();
@@ -191,7 +206,7 @@ class SyncPlaylistAction extends GuideLinkAction
 
             // Existing and restored groups already have their final IDs in the preview plan.
             if (isset($groupActionCounts['create'])) {
-                $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $rules, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+                $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $guide['channel_ids'], $logoSource, $preservedGroupKeys);
             }
 
             $context->checkpoint(82, 'Applying diff-only channel metadata writes.', [
@@ -199,6 +214,8 @@ class SyncPlaylistAction extends GuideLinkAction
             ], log: true);
 
             $writeResult = $channelWriter->apply($writePlan, $context);
+            // Cleanup depends on complete metadata writes; group cleanup also
+            // requires successful quarantine. A failed stage blocks dependants.
             if (! $writeResult['aborted'] && $writeResult['channels_failed'] === 0
                 && ! $context->cancellationRequested()) {
                 $quarantineResult = $quarantine->apply($playlist, $quarantinePlan, $context, $writePlan);
@@ -284,7 +301,7 @@ class SyncPlaylistAction extends GuideLinkAction
 
     /**
      * @param  array<string, mixed>  $payload
-     * @param  array<int, array<string, mixed>>  $sourceEntries
+     * @param  list<SourceEntry>  $sourceEntries
      * @return array<string, mixed>
      */
     private function scopePayload(array $payload, array $sourceEntries): array
@@ -315,7 +332,7 @@ class SyncPlaylistAction extends GuideLinkAction
 
     /**
      * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>|null
+     * @return array{summary: array<string, mixed>, snapshot: SourceSnapshot}|null
      */
     private function prepareSourceCache(array $payload, PluginExecutionContext $context): ?array
     {
@@ -330,12 +347,12 @@ class SyncPlaylistAction extends GuideLinkAction
         try {
             $lastGood = $cache->readLastGood($config);
 
-            return [
+            return ['snapshot' => $lastGood, 'summary' => [
                 'status' => 'ready',
                 'source_cache_path' => $lastGood['path'],
                 'channel_count' => count($lastGood['entries']),
                 'fetched_at' => $lastGood['metadata']['fetched_at'] ?? null,
-            ];
+            ]];
         } catch (\RuntimeException $exception) {
             if (! str_contains($exception->getMessage(), 'No last-good source cache exists')) {
                 throw $exception;
@@ -357,13 +374,17 @@ class SyncPlaylistAction extends GuideLinkAction
                 'channel_count' => $source['channel_count'] ?? 0,
             ]);
 
-            return [
+            return ['snapshot' => [
+                'entries' => $result['entries'],
+                'metadata' => $source,
+                'path' => $source['last_good_cache_path'],
+            ], 'summary' => [
                 'status' => 'prepared',
                 'source_cache_path' => $source['last_good_cache_path'] ?? null,
                 'channel_count' => (int) ($source['channel_count'] ?? 0),
                 'fetched_at' => $source['fetched_at'] ?? null,
                 'stale_fallback' => (bool) ($source['stale_fallback'] ?? false),
-            ];
+            ]];
         }
     }
 

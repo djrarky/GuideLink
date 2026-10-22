@@ -14,6 +14,11 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
+/**
+ * @phpstan-import-type MatchRow from ChannelMatcher
+ * @phpstan-import-type ExcludedRow from ScopeFilter
+ * @phpstan-import-type WritePlanRow from WritePlanBuilder
+ */
 class ChannelQuarantineService
 {
     public const TABLE = 'plugin_guidelink_quarantines';
@@ -22,7 +27,7 @@ class ChannelQuarantineService
      * Plan from matching decisions, never from whether metadata happened to change.
      *
      * @param  Collection<int, Channel>  $channels
-     * @param  array<int, array<string, mixed>>  $decisions
+     * @param  list<MatchRow|ExcludedRow>  $decisions
      * @return array<int, array<string, mixed>>
      */
     public function plan(Playlist $playlist, Collection $channels, array $decisions, bool $enabled, PluginExecutionContext $context): array
@@ -98,6 +103,7 @@ class ChannelQuarantineService
      * Keep the merge-policy snapshot and native write atomic for each channel.
      *
      * @param  array<int, array<string, mixed>>  $plan
+     * @param  list<WritePlanRow>  $writePlan  Successful metadata plans used to account for this run's earlier writes.
      * @return array<string, mixed>
      */
     public function apply(Playlist $playlist, array $plan, PluginExecutionContext $context, array $writePlan = []): array

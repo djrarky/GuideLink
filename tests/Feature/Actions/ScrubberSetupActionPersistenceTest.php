@@ -9,15 +9,51 @@ use App\Models\Channel;
 use App\Models\ChannelScrubber;
 use App\Models\ChannelScrubberLog;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
+use AppLocalPlugins\GuideLink\Services\ScrubberSetupService;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Schema;
 
 class ScrubberSetupActionPersistenceTest extends PluginFeatureTestCase
 {
     use RefreshDatabase;
+
+    public function test_scrubber_columns_are_read_once_per_apply_and_refreshed_on_the_next_call(): void
+    {
+        [$context, $playlist] = $this->context();
+        ChannelScrubber::withoutEvents(fn () => ChannelScrubber::create([
+            'name' => 'GuideLink - '.$playlist->name, 'user_id' => $context->user->id,
+            'playlist_id' => $playlist->id, 'status' => 'pending',
+        ]));
+        $service = new ScrubberSetupService;
+        $desired = $service->desiredConfig($playlist, [], $context);
+        foreach ([true, false] as $hasProtection) {
+            DB::enableQueryLog();
+            DB::flushQueryLog();
+            try {
+                Schema::getColumnListing('channel_scrubbers');
+                $columnQueries = array_column(DB::getQueryLog(), 'query');
+                DB::flushQueryLog();
+                $result = $service->apply($playlist, $desired, dryRun: true);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+            $this->assertNotEmpty($columnQueries);
+            foreach ($columnQueries as $sql) {
+                $this->assertCount(1, array_filter($queries, fn (array $query): bool => $query['query'] === $sql));
+            }
+            $this->assertSame($hasProtection, array_key_exists('protect_failover_channels', $result['details']['before']));
+            $this->assertSame($hasProtection, array_key_exists('protect_failover_channels', $result['details']['desired']));
+            if ($hasProtection) {
+                Schema::table('channel_scrubbers', fn ($table) => $table->dropColumn('protect_failover_channels'));
+            }
+        }
+    }
 
     public function test_deleted_selected_scrubber_does_not_report_successful_setup(): void
     {

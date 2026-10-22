@@ -7,6 +7,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\LazyCollection;
 
+/**
+ * @phpstan-import-type MatchRow from ChannelMatcher
+ * @phpstan-import-type ExcludedRow from ScopeFilter
+ * @phpstan-import-type WritePlanRow from WritePlanBuilder
+ */
 class RunResultRepository
 {
     public const TABLE = 'plugin_guidelink_results';
@@ -29,9 +34,9 @@ class RunResultRepository
     }
 
     /**
-     * @param  array<int, array<string, mixed>>  $matchRows
-     * @param  array<int, array<string, mixed>>  $excludedRows
-     * @param  array<int, array<string, mixed>>  $writePlan
+     * @param  list<MatchRow>  $matchRows
+     * @param  list<ExcludedRow>  $excludedRows
+     * @param  list<WritePlanRow>  $writePlan
      * @return array<string, mixed>
      */
     public function replaceSync(

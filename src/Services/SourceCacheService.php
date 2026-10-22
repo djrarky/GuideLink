@@ -12,6 +12,14 @@ use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Storage;
 use JsonException;
 
+/**
+ * Persistent parsed data, before the current guide and profile aliases are applied.
+ * A snapshot is validated against one source configuration and its minimum count.
+ * The optional cached stream ID is cast by ParsedSourceLoader, not validated here.
+ *
+ * @phpstan-type CachedSourceEntry array{number: int, name: string, category: string, aliases: array<int, string>, stream_id?: mixed}
+ * @phpstan-type SourceSnapshot array{metadata: array<string, mixed>, entries: list<CachedSourceEntry>, path: string}
+ */
 class SourceCacheService
 {
     private const CACHE_ROOT = 'plugin-data/guidelink/source-cache';
@@ -90,7 +98,7 @@ class SourceCacheService
 
     /**
      * @param  array<string, mixed>  $config
-     * @param  array<int, array<string, mixed>>  $entries
+     * @param  list<CachedSourceEntry>  $entries
      * @param  array<string, mixed>  $metadata
      *
      * @throws JsonException
@@ -134,20 +142,45 @@ class SourceCacheService
      */
     public function isFresh(array $config): bool
     {
+        return $this->readFresh($config) !== null;
+    }
+
+    /** @return SourceSnapshot|null */
+    public function readFresh(array $config): ?array
+    {
+        if ((bool) $config['force_refresh'] || (int) $config['source_cache_days'] <= 0) {
+            return null;
+        }
+
+        try {
+            $cache = $this->readLastGood($config);
+
+            return $this->snapshotIsFresh($config, $cache) ? $cache : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Check freshness of a snapshot already validated against this source configuration.
+     *
+     * @param  SourceSnapshot  $snapshot
+     */
+    public function snapshotIsFresh(array $config, array $snapshot): bool
+    {
         if ((bool) $config['force_refresh'] || (int) $config['source_cache_days'] <= 0) {
             return false;
         }
 
         try {
-            $cache = $this->readLastGood($config);
-            $fetchedAt = $cache['metadata']['fetched_at'] ?? null;
+            $fetchedAt = $snapshot['metadata']['fetched_at'] ?? null;
             if ($fetchedAt !== null && (! is_string($fetchedAt) || trim($fetchedAt) === '')) {
                 return false;
             }
             // Legacy files without fetch metadata retain their original mtime
             // behaviour. Copying a dated cache must not renew its freshness.
             $timestamp = $fetchedAt === null
-                ? Storage::disk('local')->lastModified($cache['path'])
+                ? Storage::disk('local')->lastModified($snapshot['path'])
                 : Carbon::parse($fetchedAt)->getTimestamp();
             $age = now()->getTimestamp() - $timestamp;
 
@@ -159,7 +192,7 @@ class SourceCacheService
 
     /**
      * @param  array<string, mixed>  $config
-     * @return array{metadata: array<string, mixed>, entries: array<int, array<string, mixed>>, path: string}
+     * @return SourceSnapshot
      *
      * @throws JsonException
      */

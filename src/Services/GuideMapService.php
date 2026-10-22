@@ -9,6 +9,10 @@ use AppLocalPlugins\GuideLink\Support\Options;
 
 class GuideMapService
 {
+    private ?array $mapInputs = null;
+
+    private array $preparedMap = [];
+
     /**
      * Resolve the required m3u-editor EPG into the Python-compatible
      * channel-number => stream-id guide map.
@@ -58,7 +62,8 @@ class GuideMapService
     {
         $epg = $this->epgOrFail($context, $epgId);
         $names = [];
-        foreach (EpgChannel::query()->where('epg_id', $epg->id)->whereIn('channel_id', $ids)->get() as $channel) {
+        foreach (EpgChannel::query()->where('epg_id', $epg->id)->whereIn('channel_id', $ids)
+            ->get(['channel_id', 'name', 'display_name', 'additional_display_names']) as $channel) {
             $id = $channel->channel_id;
             if (isset($names[$id])) {
                 throw new \RuntimeException("Guide EPG target [{$id}] is ambiguous.");
@@ -85,53 +90,62 @@ class GuideMapService
      */
     private function mapForEpg(Epg $epg, array &$aliases, array &$channelIds): array
     {
-        $map = [];
-        $streamIds = [];
-
-        EpgChannel::query()
+        $channels = EpgChannel::query()
             ->where('epg_id', $epg->id)
             ->orderBy('display_name')
             ->orderBy('channel_id')
             ->orderBy('id')
-            ->get(['id', 'channel_id', 'display_name', 'name', 'additional_display_names'])
-            ->each(function (EpgChannel $channel) use (&$map, &$streamIds, &$aliases, &$channelIds): void {
-                $names = array_map(
-                    fn (mixed $name): string => trim((string) $name),
-                    [$channel->display_name, $channel->name, ...($channel->additional_display_names ?? [])],
-                );
-                $number = $this->channelNumber($names);
-                $streamId = trim((string) $channel->channel_id);
+            ->get(['id', 'channel_id', 'display_name', 'name', 'additional_display_names']);
+        // Read current rows before reusing preparation; timestamps alone miss
+        // same-second edits and imports that do not update the parent EPG.
+        $inputs = [$epg->id, $channels->map(fn (EpgChannel $channel): array => $channel->getAttributes())->all()];
+        if ($this->mapInputs === $inputs) {
+            [$map, $aliases, $channelIds] = $this->preparedMap;
 
-                if ($number === null || $streamId === '') {
-                    return;
-                }
+            return $map;
+        }
+        $map = [];
+        $streamIds = [];
+        $channels->each(function (EpgChannel $channel) use (&$map, &$streamIds, &$aliases, &$channelIds): void {
+            $names = array_map(
+                fn (mixed $name): string => trim((string) $name),
+                [$channel->display_name, $channel->name, ...($channel->additional_display_names ?? [])],
+            );
+            $number = $this->channelNumber($names);
+            $streamId = trim((string) $channel->channel_id);
 
-                if (isset($map[$number]) && $map[$number] !== $streamId) {
-                    throw new \RuntimeException("Guide EPG maps channel number [{$number}] to more than one stream id.");
-                }
+            if ($number === null || $streamId === '') {
+                return;
+            }
 
-                if (isset($streamIds[$streamId]) && $streamIds[$streamId] !== $number) {
-                    throw new \RuntimeException("Guide EPG stream id [{$streamId}] appears against more than one channel number.");
-                }
+            if (isset($map[$number]) && $map[$number] !== $streamId) {
+                throw new \RuntimeException("Guide EPG maps channel number [{$number}] to more than one stream id.");
+            }
 
-                if (isset($channelIds[$number])) {
-                    throw new \RuntimeException("Guide EPG has duplicate records for channel number [{$number}] and stream id [{$streamId}]. Remove the ambiguous guide record before syncing.");
-                }
+            if (isset($streamIds[$streamId]) && $streamIds[$streamId] !== $number) {
+                throw new \RuntimeException("Guide EPG stream id [{$streamId}] appears against more than one channel number.");
+            }
 
-                $map[$number] = $streamId;
-                $channelIds[$number] = (int) $channel->id;
-                $streamIds[$streamId] = $number;
-                foreach ($names as $name) {
-                    // Number-only display names identify the guide slot, not
-                    // a channel alias (for example, "101" must not match a name).
-                    if ($name !== '' && preg_match('/\p{L}/u', $name) === 1) {
-                        $aliases[$number][] = $name;
-                    }
+            if (isset($channelIds[$number])) {
+                throw new \RuntimeException("Guide EPG has duplicate records for channel number [{$number}] and stream id [{$streamId}]. Remove the ambiguous guide record before syncing.");
+            }
+
+            $map[$number] = $streamId;
+            $channelIds[$number] = (int) $channel->id;
+            $streamIds[$streamId] = $number;
+            foreach ($names as $name) {
+                // Number-only display names identify the guide slot, not
+                // a channel alias (for example, "101" must not match a name).
+                if ($name !== '' && preg_match('/\p{L}/u', $name) === 1) {
+                    $aliases[$number][] = $name;
                 }
-            });
+            }
+        });
 
         $aliases = array_map(fn (array $names): array => array_values(array_unique($names)), $aliases);
         ksort($map);
+        $this->mapInputs = $inputs;
+        $this->preparedMap = [$map, $aliases, $channelIds];
 
         return $map;
     }

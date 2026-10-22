@@ -157,7 +157,7 @@ class ChannelWriteSafetyTest extends PluginFeatureTestCase
             'number' => 101, 'name' => 'BBC One', 'category' => '', 'aliases' => [],
             'stream_id' => $desiredId, 'guide_valid' => true,
         ]], $matcher->thresholds([], []), $rules);
-        $plan = (new WritePlanBuilder($countries))->rows($matches, [], $rules);
+        $plan = (new WritePlanBuilder)->rows($matches, []);
         $this->assertCount(1, $plan);
 
         return [$context, $playlist, $channel, $plan];

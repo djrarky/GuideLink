@@ -14,6 +14,7 @@ use AppLocalPlugins\GuideLink\Plugin;
 use AppLocalPlugins\GuideLink\Services\BundledAliasService;
 use AppLocalPlugins\GuideLink\Services\ProfileAliasResolver;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
+use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -170,6 +171,43 @@ class BundledAliasesTest extends PluginFeatureTestCase
             $this->assertFalse($result->success);
             $this->assertDatabaseCount(ProfileAliasResolver::ALIASES, 0);
         }
+    }
+
+    public function test_bundled_and_custom_sets_share_one_selected_guide_read(): void
+    {
+        [$context, , $bundleSet] = $this->prepare(true);
+        $guide = (int) DB::table(ProfileAliasResolver::SETS)->where('id', $bundleSet)->value('guide_epg_id');
+        $reference = Epg::factory()->for($context->user)->createQuietly();
+        EpgChannel::factory()->createQuietly([
+            'epg_id' => $reference->id, 'user_id' => $context->user->id, 'channel_id' => '705.uk',
+            'display_name' => '705', 'name' => 'Star Plus HD',
+        ]);
+        $custom = DB::table(ProfileAliasResolver::SETS)->insertGetId([
+            'extension_plugin_id' => $context->plugin->id, 'name' => 'Custom', 'country' => 'uk',
+            'guide_epg_id' => $reference->id, 'enabled' => true,
+        ]);
+        DB::table(ProfileAliasResolver::ALIASES)->insert([
+            'extension_plugin_id' => $context->plugin->id, 'alias_set_ids' => json_encode([$custom]),
+            'target_stream_id' => '705.uk', 'aliases' => json_encode(['Provider Star']), 'enabled' => true,
+        ]);
+        $entries = array_map(fn (array $row): array => [
+            'number' => (int) $row['target_stream_id'], 'name' => $row['target_name'],
+            'aliases' => [], 'stream_id' => $row['target_stream_id'], 'guide_valid' => true,
+        ], (new BundledAliasService)->load('sky-uk')['entries']);
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        try {
+            $resolved = (new ProfileAliasResolver)->apply($entries, ['guide_epg_id' => $guide, 'alias_set_ids' => [$bundleSet, $custom]], $context);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+        $this->assertCount(6, array_filter($queries, fn (array $query): bool => str_starts_with($query['query'], 'select')));
+        $target = array_column($resolved, null, 'stream_id')['705.uk'];
+        $key = (new CountryRulesRepository)->normalize('Utsav Plus');
+        $this->assertSame([$bundleSet => 'Sky defaults'], $target['profile_aliases'][$key]);
+        $this->assertSame([$custom => 'Custom'], $target['profile_aliases']['PROVIDER STAR']);
     }
 
     private function prepare(bool $dryRun): array

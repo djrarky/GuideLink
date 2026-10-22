@@ -5,7 +5,7 @@
 | [Install](INSTALL.md) | Install, update, verify, and uninstall GuideLink. |
 | [Configure](CONFIGURATION.md) | First-run setup, schedules, profiles, actions, and runtime behavior. |
 | [Extend](EXTENDING.md) | Add countries, providers, sources, fixtures, and scraper backends. |
-| [Maintain](MAINTAINING.md) | Review checklist, validation gates, CI boundary, and release notes. |
+| [Maintain](MAINTAINING.md) | Code walkthrough, data contracts, transaction/cache boundaries, validation and releases. |
 
 Start with [Install](INSTALL.md) for operator setup or [Extend](EXTENDING.md)
 for source/scraper contribution work.

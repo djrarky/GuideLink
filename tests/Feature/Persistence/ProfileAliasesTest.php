@@ -8,6 +8,7 @@ use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\Playlist;
+use App\Models\User;
 use App\Plugins\PluginSchemaMapper;
 use App\Plugins\PluginUiTableRegistry;
 use App\Plugins\Support\PluginExecutionContext;
@@ -222,6 +223,131 @@ class ProfileAliasesTest extends PluginFeatureTestCase
         $this->assertSame([], $resolver->enabledAliases($second, $context));
     }
 
+    public function test_selected_alias_sets_use_two_queries_and_observe_edits_between_playlists(): void
+    {
+        [$context] = $this->uniqueContext(applyPluginSchema: true);
+        $guide = $this->guideEpgId($context);
+        $first = $this->aliasSet($context, $guide);
+        $second = DB::table(ProfileAliasResolver::SETS)->insertGetId([
+            'extension_plugin_id' => $context->plugin->id, 'name' => 'Second set', 'country' => 'uk',
+            'guide_epg_id' => $guide, 'enabled' => true,
+        ]);
+        DB::table(ProfileAliasResolver::ALIASES)->update([
+            'alias_set_ids' => json_encode([$first, (string) $second]),
+        ]);
+        DB::table(ProfileAliasResolver::ALIASES)->insert([
+            'extension_plugin_id' => $context->plugin->id, 'alias_set_ids' => json_encode([$first, $second]),
+            'target_stream_id' => 'bbc.one', 'aliases' => json_encode(['Disabled alias']), 'enabled' => false,
+        ]);
+        $resolver = new ProfileAliasResolver;
+        $entry = ['number' => 101, 'name' => 'BBC One', 'aliases' => [], 'stream_id' => 'bbc.one', 'guide_valid' => true];
+        $payload = ['guide_epg_id' => $guide, 'alias_set_ids' => [$first, $second]];
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        try {
+            $resolved = $resolver->apply([$entry], $payload, $context);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+        $selects = array_filter($queries, fn (array $query): bool => str_starts_with($query['query'], 'select'));
+        $this->assertCount(2, $selects);
+        $this->assertSame([$first => 'Provider names', $second => 'Second set'], $resolved[0]['profile_aliases']['THE BEEB 1']);
+        $this->assertArrayNotHasKey('DISABLED ALIAS', $resolved[0]['profile_aliases']);
+        $this->assertSame($resolved, $resolver->apply([$entry], $payload, $context));
+
+        DB::table(ProfileAliasResolver::ALIASES)->where('enabled', true)->update(['aliases' => json_encode(['Updated name'])]);
+        $updated = $resolver->apply([$entry], $payload, $context);
+        $this->assertArrayNotHasKey('THE BEEB 1', $updated[0]['profile_aliases']);
+        $this->assertArrayHasKey('UPDATED NAME', $updated[0]['profile_aliases']);
+        DB::table(ProfileAliasResolver::ALIASES)->where('enabled', true)->update(['enabled' => false]);
+        $this->assertSame([$entry], $resolver->apply([$entry], $payload, $context));
+
+        DB::table(ProfileAliasResolver::SETS)->where('id', $second)->update(['enabled' => false]);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('missing or disabled');
+        $resolver->apply([$entry], $payload, $context);
+    }
+
+    public function test_reference_guide_reads_are_batched_across_sets_and_refreshed_on_each_apply(): void
+    {
+        [$context] = $this->uniqueContext(applyPluginSchema: true);
+        $reference = $this->guideEpgId($context);
+        $selected = $this->guideEpgId($context);
+        foreach ([$reference, $selected] as $guide) {
+            EpgChannel::factory()->createQuietly([
+                'epg_id' => $guide, 'user_id' => $context->user->id, 'channel_id' => 'bbc.two',
+                'display_name' => '102', 'name' => 'BBC Two',
+            ]);
+        }
+        $first = $this->aliasSet($context, $reference);
+        $second = $this->aliasSet($context, $reference, 'Second set');
+        DB::table(ProfileAliasResolver::ALIASES)->whereJsonContains('alias_set_ids', $second)->update([
+            'target_stream_id' => 'bbc.two', 'aliases' => json_encode(['The other Beeb']),
+        ]);
+        $entries = [
+            ['number' => 101, 'name' => 'BBC One', 'aliases' => [], 'stream_id' => 'bbc.one', 'guide_valid' => true],
+            ['number' => 102, 'name' => 'BBC Two', 'aliases' => [], 'stream_id' => 'bbc.two', 'guide_valid' => true],
+        ];
+        $payload = ['guide_epg_id' => $selected, 'alias_set_ids' => [$first, $second]];
+        $resolver = new ProfileAliasResolver;
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        try {
+            $resolved = $resolver->apply($entries, $payload, $context);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+        $selects = array_filter($queries, fn (array $query): bool => str_starts_with($query['query'], 'select'));
+        // Sets + aliases + one ownership check and one target read for each guide.
+        $this->assertCount(6, $selects);
+        $this->assertSame([$first => 'Provider names'], $resolved[0]['profile_aliases']['THE BEEB 1']);
+        $this->assertSame([$second => 'Second set'], $resolved[1]['profile_aliases']['THE OTHER BEEB']);
+        $this->assertSame($resolved, $resolver->apply($entries, $payload, $context));
+
+        // A same-timestamp edit must invalidate validation even when aliases are unchanged.
+        DB::table('epg_channels')->where('epg_id', $reference)->where('channel_id', 'bbc.two')->update(['name' => 'Unrelated News']);
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('does not identify the same channel');
+        $resolver->apply($entries, $payload, $context);
+    }
+
+    public function test_batched_guide_validation_rechecks_ownership_and_ambiguous_targets(): void
+    {
+        foreach (['reference', 'selected'] as $side) {
+            foreach (['owner', 'duplicate'] as $change) {
+                [$context] = $this->uniqueContext(applyPluginSchema: true);
+                $context->user->update(['is_admin' => false]);
+                $reference = $this->guideEpgId($context);
+                $selected = $this->guideEpgId($context);
+                $first = $this->aliasSet($context, $reference);
+                $second = $this->aliasSet($context, $reference, 'Second set');
+                $entry = ['number' => 101, 'name' => 'BBC One', 'aliases' => [], 'stream_id' => 'bbc.one', 'guide_valid' => true];
+                $payload = ['guide_epg_id' => $selected, 'alias_set_ids' => [$first, $second]];
+                $resolver = new ProfileAliasResolver;
+                $this->assertArrayHasKey('profile_aliases', $resolver->apply([$entry], $payload, $context)[0]);
+                $guide = $side === 'reference' ? $reference : $selected;
+                if ($change === 'owner') {
+                    DB::table('epgs')->where('id', $guide)->update(['user_id' => User::factory()->create()->id]);
+                } else {
+                    EpgChannel::factory()->createQuietly([
+                        'epg_id' => $guide, 'user_id' => $context->user->id, 'channel_id' => 'bbc.one',
+                        'display_name' => '101', 'name' => 'BBC One',
+                    ]);
+                }
+                try {
+                    $resolver->apply([$entry], $payload, $context);
+                    $this->fail("Changed {$side} guide {$change} must fail validation.");
+                } catch (\RuntimeException $exception) {
+                    $this->assertStringContainsString($change === 'owner' ? 'not available' : 'ambiguous', $exception->getMessage());
+                }
+            }
+        }
+    }
+
     public function test_shared_target_picker_excludes_incompatible_and_foreign_sets(): void
     {
         [$context] = $this->uniqueContext(applyPluginSchema: true);
@@ -255,10 +381,10 @@ class ProfileAliasesTest extends PluginFeatureTestCase
         return $result;
     }
 
-    private function aliasSet($context, int $guide): int
+    private function aliasSet($context, int $guide, string $name = 'Provider names'): int
     {
         $id = DB::table(ProfileAliasResolver::SETS)->insertGetId([
-            'extension_plugin_id' => $context->plugin->id, 'name' => 'Provider names', 'country' => 'uk', 'guide_epg_id' => $guide, 'enabled' => true,
+            'extension_plugin_id' => $context->plugin->id, 'name' => $name, 'country' => 'uk', 'guide_epg_id' => $guide, 'enabled' => true,
         ]);
         DB::table(ProfileAliasResolver::ALIASES)->insert([
             'extension_plugin_id' => $context->plugin->id, 'alias_set_ids' => json_encode([$id]),

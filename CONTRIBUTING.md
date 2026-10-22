@@ -25,6 +25,11 @@ Important files and directories:
 - `docs/EXTENDING.md`: source and scraper contribution guide.
 - `docs/MAINTAINING.md`: maintainer review, validation, and release checklist.
 
+For changes to sync, matching or writes, start with the
+[sync walkthrough and data contracts](docs/MAINTAINING.md#following-a-sync-through-the-code).
+It explains operation order, partial commits and cache lifetimes before you edit
+the individual services.
+
 ## Pull Request Scope
 
 Prefer small pull requests with one clear purpose. Good examples:
@@ -182,13 +187,15 @@ edited. For example:
 Add TV channel source edge-case coverage
 ```
 
-Release notes are generated from commit subjects. Prefer `feat:`, `fix:`, `perf:`,
+The commit-summary helper groups changes by subject. Prefer `feat:`, `fix:`, `perf:`,
 `refactor:`, `docs:`, or `chore:` so changes appear in the appropriate section.
 For example, `fix: Preserve timeshift matching`. Optional scopes such as
 `feat(aliases): Share custom names` are supported. Mark breaking changes with `!`
 before the colon or a `BREAKING CHANGE:` paragraph in the body. Other commit
-subjects still appear under Other Changes. See
-[release notes](docs/MAINTAINING.md#commit-messages-and-release-notes) for details.
+subjects still appear under Other Changes. See the
+[commit-summary helper](docs/MAINTAINING.md#commit-summary-helper) for details.
+Write user-facing release notes separately, following the
+[release notes guide](docs/MAINTAINING.md#release-notes).
 
 Keep generated archives, raw scraper captures, local secrets, and environment
 files out of commits.

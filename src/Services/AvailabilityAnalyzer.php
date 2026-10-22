@@ -10,6 +10,10 @@ use AppLocalPlugins\GuideLink\Support\MatchDecision;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Database\Eloquent\Collection;
 
+/**
+ * @phpstan-import-type SourceEntry from ParsedSourceLoader
+ * @phpstan-import-type FailoverSummary from ChannelRepository
+ */
 class AvailabilityAnalyzer
 {
     public function __construct(
@@ -20,13 +24,14 @@ class AvailabilityAnalyzer
     /**
      * @param  Collection<int, Channel>  $channels
      * @param  array<int, true>  $scrubberChannelIds
+     * @param  array<int, FailoverSummary>|null  $failoverSummaries  Summaries from this report's loaded channels.
      * @return array<int, array<string, mixed>>
      */
-    public function channelRows(Playlist $playlist, Collection $channels, array $scrubberChannelIds): array
+    public function channelRows(Playlist $playlist, Collection $channels, array $scrubberChannelIds, ?array $failoverSummaries = null): array
     {
         return $channels
-            ->map(function (Channel $channel) use ($playlist, $scrubberChannelIds): array {
-                $failovers = $this->channels->failoverSummary($channel);
+            ->map(function (Channel $channel) use ($playlist, $scrubberChannelIds, $failoverSummaries): array {
+                $failovers = $failoverSummaries[$channel->id] ?? $this->channels->failoverSummary($channel);
                 $scrubberFlagged = isset($scrubberChannelIds[(int) $channel->id]);
 
                 return [
@@ -72,11 +77,12 @@ class AvailabilityAnalyzer
     }
 
     /**
-     * @param  array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id?: string}>  $sourceEntries
+     * @param  list<SourceEntry>  $sourceEntries
      * @param  Collection<int, Channel>  $channels
      * @param  array<int, true>  $scrubberChannelIds
-     * @param  array{fuzzy_threshold: int, min_auto_score: int, min_auto_margin: int}  $thresholds
+     * @param  array<string, int|float>  $thresholds  Complete settings from ChannelMatcher::thresholds().
      * @param  array<string, mixed>  $rules
+     * @param  array<int, FailoverSummary>|null  $failoverSummaries  Summaries from this report's loaded channels.
      * @return array<int, array<string, mixed>>
      */
     public function sourceCoverageRows(
@@ -87,6 +93,7 @@ class AvailabilityAnalyzer
         array $thresholds,
         array $rules,
         ?PluginExecutionContext $context = null,
+        ?array $failoverSummaries = null,
     ): array {
         $matchesBySourceNumber = $this->matchesBySourceNumber($sourceEntries, $channels, $thresholds, $rules, $context);
         $rows = [];
@@ -103,7 +110,7 @@ class AvailabilityAnalyzer
                     $review[] = $match;
                 }
             }
-            $coverage = $this->coverageStats($confirmed, $scrubberChannelIds);
+            $coverage = $this->coverageStats($confirmed, $scrubberChannelIds, $failoverSummaries);
             $status = $confirmed !== [] ? $this->sourceCoverageStatus($coverage)
                 : ($review !== [] ? 'needs_review' : 'no_iptv_match');
             $bestMatch = $confirmed[0] ?? $review[0] ?? null;
@@ -179,9 +186,9 @@ class AvailabilityAnalyzer
     }
 
     /**
-     * @param  array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id?: string}>  $sourceEntries
+     * @param  list<SourceEntry>  $sourceEntries
      * @param  Collection<int, Channel>  $channels
-     * @param  array{fuzzy_threshold: int, min_auto_score: int, min_auto_margin: int}  $thresholds
+     * @param  array<string, int|float>  $thresholds
      * @param  array<string, mixed>  $rules
      * @return array<int, array<int, array{channel: Channel, decision: string, score: int, matched_on: string}>>
      */
@@ -249,9 +256,10 @@ class AvailabilityAnalyzer
     /**
      * @param  array<int, array{channel: Channel, decision: string, score: int, matched_on: string}>  $matches
      * @param  array<int, true>  $scrubberChannelIds
+     * @param  array<int, FailoverSummary>|null  $failoverSummaries
      * @return array{enabled: int, disabled: int, scrubber: int, failover_titles: array<int, string>, failover_ids: array<int, int>}
      */
-    private function coverageStats(array $matches, array $scrubberChannelIds): array
+    private function coverageStats(array $matches, array $scrubberChannelIds, ?array $failoverSummaries): array
     {
         $coverage = [
             'enabled' => 0,
@@ -267,7 +275,7 @@ class AvailabilityAnalyzer
             $coverage[$channel->enabled ? 'enabled' : 'disabled']++;
             $coverage['scrubber'] += isset($scrubberChannelIds[(int) $channel->id]) ? 1 : 0;
 
-            $failovers = $this->channels->failoverSummary($channel);
+            $failovers = $failoverSummaries[$channel->id] ?? $this->channels->failoverSummary($channel);
             foreach ($failovers['enabled_ids'] as $id) {
                 $coverage['failover_ids'][$id] = $id;
             }

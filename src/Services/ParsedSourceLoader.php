@@ -9,28 +9,55 @@ use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 
+/**
+ * Build matching input from a validated source and the current guide/profile.
+ * entries() supplies stream_id and guide_valid; matching helpers also accept
+ * the core source fields alone. Empty categories preserve existing groups.
+ * profile_aliases maps normalized names to alias-set IDs and display names.
+ *
+ * @phpstan-import-type SourceSnapshot from SourceCacheService
+ *
+ * @phpstan-type SourceEntry array{
+ *     number: int, name: string, category: string, aliases: array<int, string>,
+ *     stream_id?: string, guide_valid?: bool, guide_only?: bool,
+ *     profile_aliases?: array<string, array<int, string>>
+ * }
+ * @phpstan-type PreparedSourceEntry SourceEntry&array{stream_id: string, guide_valid: bool}
+ */
 class ParsedSourceLoader
 {
-    public function __construct(private readonly SourceCacheService $cache) {}
+    private readonly ProfileAliasResolver $profileAliases;
+
+    private ?array $guideAliasInputs = null;
+
+    private array $guideAliasEntries = [];
+
+    public function __construct(
+        private readonly SourceCacheService $cache,
+        private readonly CountryRulesRepository $countryRules = new CountryRulesRepository,
+    ) {
+        $this->profileAliases = new ProfileAliasResolver($countryRules);
+    }
 
     /**
      * @param  array<string, mixed>  $payload
      * @param  array<int, string>  $guideMap
      * @param  array<int, array<int, string>>  $guideAliases
-     * @return array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id: string, guide_valid: bool}>
+     * @param  SourceSnapshot|null  $sourceSnapshot  Already validated for this playlist's source configuration.
+     * @return list<PreparedSourceEntry>
      */
-    public function entries(array $payload, PluginExecutionContext $context, array $guideMap, array $guideAliases = []): array
+    public function entries(array $payload, PluginExecutionContext $context, array $guideMap, array $guideAliases = [], ?array $sourceSnapshot = null): array
     {
         $sourceMode = strtolower(Options::string($payload, [], 'source_mode', ProfileDefaults::SOURCE_MODE_SCRAPER_CACHE));
         if ($sourceMode === ProfileDefaults::SOURCE_MODE_NATIVE_PLAYLIST) {
-            return (new ProfileAliasResolver)->apply($this->withGuideAliases($this->nativePlaylistEntries($payload, $context, $guideMap), $guideAliases, $payload), $payload, $context);
+            return $this->profileAliases->apply($this->withGuideAliases($this->nativePlaylistEntries($payload, $context, $guideMap), $guideAliases, $payload), $payload, $context);
         }
 
         if ($sourceMode !== ProfileDefaults::SOURCE_MODE_SCRAPER_CACHE) {
             throw new \RuntimeException("Unsupported source mode [{$sourceMode}].");
         }
 
-        $cache = $this->cache->readLastGood($this->cache->config($payload, []));
+        $cache = $sourceSnapshot ?? $this->cache->readLastGood($this->cache->config($payload, []));
         $entries = [];
         $missingGuide = 0;
 
@@ -69,17 +96,17 @@ class ParsedSourceLoader
             'source_fetched_at' => $cache['metadata']['fetched_at'] ?? null,
         ]);
 
-        return (new ProfileAliasResolver)->apply($this->withGuideAliases($entries, $guideAliases, $payload, $guideMap), $payload, $context);
+        return $this->profileAliases->apply($this->withGuideAliases($entries, $guideAliases, $payload, $guideMap), $payload, $context);
     }
 
     /**
      * Use names from the validated numbered guide instead of maintained name
      * rewrites. Ambiguous guide names cannot become automatic aliases.
      *
-     * @param  array<int, array<string, mixed>>  $entries
+     * @param  list<PreparedSourceEntry>  $entries
      * @param  array<int, array<int, string>>  $guideAliases
      * @param  array<string, mixed>  $payload
-     * @return array<int, array<string, mixed>>
+     * @return list<PreparedSourceEntry>
      */
     private function withGuideAliases(array $entries, array $guideAliases, array $payload, array $guideMap = []): array
     {
@@ -87,8 +114,12 @@ class ParsedSourceLoader
             return $entries;
         }
 
-        $countries = new CountryRulesRepository;
+        $countries = $this->countryRules;
         $rules = $countries->resolve($payload, []);
+        $inputs = [$entries, $guideAliases, $rules, $guideMap];
+        if ($this->guideAliasInputs === $inputs) {
+            return $this->guideAliasEntries;
+        }
         $keyFor = fn (string $name): string => $countries->lookupKey($name, $rules);
         $owners = [];
         $sourceNumbers = array_fill_keys(array_column($entries, 'number'), true);
@@ -132,13 +163,15 @@ class ParsedSourceLoader
             ];
         }
 
-        return $entries;
+        $this->guideAliasInputs = $inputs;
+
+        return $this->guideAliasEntries = $entries;
     }
 
     /**
      * @param  array<string, mixed>  $payload
      * @param  array<int, string>  $guideMap
-     * @return array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id: string, guide_valid: bool}>
+     * @return list<PreparedSourceEntry>
      */
     private function nativePlaylistEntries(array $payload, PluginExecutionContext $context, array $guideMap): array
     {
@@ -152,14 +185,17 @@ class ParsedSourceLoader
             ->where('playlist_id', $playlist->id)
             ->where('is_vod', false)
             ->where('enabled', true)
-            ->with('group')
+            ->with('group:id,name')
             ->orderBy('channel')
             ->orderBy('sort')
             ->orderBy('name')
             ->orderBy('id')
-            ->get();
+            ->get([
+                'id', 'channel', 'group_id', 'group_internal', 'group', 'stream_id', 'stream_id_custom',
+                ...ChannelAttributes::NAME_FIELDS,
+            ]);
 
-        $countries = new CountryRulesRepository;
+        $countries = $this->countryRules;
         $rules = $countries->resolve($payload, []);
         $entries = [];
         $duplicateNumbers = 0;

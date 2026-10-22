@@ -8,6 +8,8 @@ use AppLocalPlugins\GuideLink\Actions\SetupChecklistAction;
 use AppLocalPlugins\GuideLink\Plugin;
 use AppLocalPlugins\GuideLink\Services\GuideLinkServices;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
+use AppLocalPlugins\GuideLink\Services\SetupChecklistService;
+use AppLocalPlugins\GuideLink\Services\SourceCacheService;
 use AppLocalPlugins\GuideLink\Services\SourceRefreshService;
 use AppLocalPlugins\GuideLink\Support\RunCancelled;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
@@ -71,6 +73,54 @@ class SetupChecklistSafetyTest extends PluginFeatureTestCase
             $this->assertTrue($result->data['skipped']);
         }
         Notification::assertNothingSent();
+    }
+
+    public function test_checklist_reads_each_snapshot_once_and_preserves_freshness_and_minimum_checks(): void
+    {
+        Storage::fake('local');
+        [$context] = $this->context(applyPluginSchema: true);
+        $cache = new class extends SourceCacheService
+        {
+            public int $reads = 0;
+
+            public function readLastGood(array $config): array
+            {
+                $this->reads++;
+
+                return parent::readLastGood($config);
+            }
+        };
+        $settings = [...$this->cacheConfig(), 'source_mode' => 'scraper_cache'];
+        $profile = DB::table(ProfileRepository::PROFILES_TABLE)->insertGetId([
+            'extension_plugin_id' => $context->plugin->id, 'name' => 'Cache checks',
+            'enabled' => true, 'settings' => json_encode($settings),
+        ]);
+        $service = new SetupChecklistService($cache);
+        $cases = [
+            [['fetched_at' => now()->toIso8601String()], [], true],
+            [['fetched_at' => now()->subDays(3)->toIso8601String()], [], false],
+            [['fetched_at' => now()->addDay()->toIso8601String()], [], false],
+            [['fetched_at' => 'not a date'], [], false],
+            [[], [], true],
+            [[], ['force_refresh' => true], false],
+            [[], ['source_cache_days' => 0], false],
+        ];
+        foreach ($cases as [$metadata, $overrides, $fresh]) {
+            $config = [...$settings, ...$overrides];
+            $path = $cache->writeLastGood($config, [['number' => 101, 'name' => 'BBC One', 'category' => '', 'aliases' => []]], $metadata);
+            touch(Storage::disk('local')->path($path), now()->getTimestamp());
+            clearstatcache();
+            DB::table(ProfileRepository::PROFILES_TABLE)->where('id', $profile)->update(['settings' => json_encode($config)]);
+            $before = $cache->reads;
+            $row = collect($service->rows($context))->firstWhere('title', 'Profile source: Cache checks');
+            $this->assertSame($before + 1, $cache->reads);
+            $this->assertSame('ready', $row['status']);
+            $this->assertSame($fresh, $row['details']['source_cache_fresh']);
+        }
+        DB::table(ProfileRepository::PROFILES_TABLE)->where('id', $profile)->update(['settings' => json_encode([...$settings, 'min_channels' => 2])]);
+        $row = collect($service->rows($context))->firstWhere('title', 'Profile source: Cache checks');
+        $this->assertSame('missing', $row['status']);
+        $this->assertStringContainsString('minimum of 2', $row['details']['error']);
     }
 
     private function action(SourceRefreshService $refresh): SetupChecklistAction

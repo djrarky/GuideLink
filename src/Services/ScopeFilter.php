@@ -11,6 +11,18 @@ use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 use Illuminate\Database\Eloquent\Collection;
 
+/**
+ * Excluded rows share display fields with matches, but have no matching/write
+ * snapshots. Preservation reasons protect channels from quarantine as well.
+ *
+ * @phpstan-import-type ChannelReportRow from ChannelAttributes
+ *
+ * @phpstan-type ExcludedRow ChannelReportRow&array{
+ *     decision: 'excluded', tier: '', score: '', matched_on: '', source_number: '',
+ *     source_name: '', source_category: '', source_stream_id: '',
+ *     candidate_summary: '', exclusion_reason: string
+ * }
+ */
 class ScopeFilter
 {
     private const LIST_KEYS = [
@@ -28,7 +40,7 @@ class ScopeFilter
      * @param  array<string, mixed>  $payload
      * @param  array<string, mixed>  $settings
      * @param  array<string, mixed>  $rules
-     * @return array{included: Collection<int, Channel>, excluded: array<int, array<string, mixed>>}
+     * @return array{included: Collection<int, Channel>, excluded: list<ExcludedRow>}
      */
     public function split(Playlist $playlist, Collection $channels, array $payload, array $settings, array $rules): array
     {
@@ -135,6 +147,7 @@ class ScopeFilter
         return in_array($group, $names, true) || $this->countryRules->matchesAny($group, $patterns);
     }
 
+    /** @return ExcludedRow */
     private function excludedRow(Playlist $playlist, Channel $channel, string $reason): array
     {
         return [

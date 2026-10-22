@@ -19,9 +19,40 @@ use Illuminate\Database\Eloquent\Collection;
  * Exact matches stay intentionally simple. The fuzzy path is stricter so sibling
  * regional channels and near-name collisions land in review unless the evidence
  * is strong enough to apply automatically.
+ *
+ * MatchResult describes one decision; MatchRow adds report fields and the raw
+ * snapshots needed to build a safe write plan. Blank report fields use '';
+ * absent source/tier/matched_on values in MatchResult use null.
+ *
+ * @phpstan-import-type SourceEntry from ParsedSourceLoader
+ * @phpstan-import-type ChannelReportRow from ChannelAttributes
+ * @phpstan-import-type DecisionState from ChannelAttributes
+ * @phpstan-import-type NativeMetadata from ChannelAttributes
+ *
+ * @phpstan-type MatchCandidate array{source: SourceEntry, key: string, score: int, query?: string, sort_score?: int, profile_alias_key?: string}
+ * @phpstan-type MatchResult array{
+ *     decision: 'fingerprint'|'auto_apply'|'needs_review'|'unmatched',
+ *     tier: int|null, score: int, matched_on: string|null, source: SourceEntry|null,
+ *     candidates: list<MatchCandidate>, review_reason: string,
+ *     profile_alias_key?: string, alias_sets?: array<int, string>
+ * }
+ * @phpstan-type MatchRow ChannelReportRow&array{
+ *     decision: 'fingerprint'|'auto_apply'|'needs_review'|'unmatched',
+ *     tier: int|'', score: int, matched_on: string, source_number: int|'',
+ *     source_name: string, source_category: string, source_stream_id: string,
+ *     candidate_summary: string, review_reason: string,
+ *     alias_sets: array<int, string>, exclusion_reason: '',
+ *     _group_id: int|null, _sort: int|float|string|null,
+ *     _epg_channel_id: int|string|null, _logo_type: string|null,
+ *     _native_originals: NativeMetadata, _decision_state: DecisionState
+ * }
  */
 class ChannelMatcher
 {
+    private ?array $indexInputs = null;
+
+    private array $preparedIndex = [];
+
     public function __construct(private readonly CountryRulesRepository $countryRules) {}
 
     /**
@@ -57,10 +88,10 @@ class ChannelMatcher
 
     /**
      * @param  Collection<int, Channel>  $channels
-     * @param  array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id?: string, guide_valid?: bool}>  $sourceEntries
+     * @param  list<SourceEntry>  $sourceEntries
      * @param  array<string, int|float>  $thresholds
      * @param  array<string, mixed>  $rules
-     * @return array<int, array<string, mixed>>
+     * @return list<MatchRow>
      */
     public function rows(
         Playlist $playlist,
@@ -116,12 +147,24 @@ class ChannelMatcher
     }
 
     /**
-     * @param  array<int, array{number: int, name: string, category: string, aliases: array<int, string>, stream_id?: string, guide_valid?: bool}>  $sourceEntries
+     * @param  list<SourceEntry>  $sourceEntries
      * @param  array<string, mixed>  $rules
      * @param  array<string, int|float>  $thresholds
      * @return array<string, mixed>
      */
     public function sourceIndex(array $sourceEntries, array $rules, array $thresholds = []): array
+    {
+        $inputs = [$sourceEntries, $rules, $thresholds];
+        if ($this->indexInputs === $inputs) {
+            return $this->preparedIndex;
+        }
+        $index = $this->buildSourceIndex($sourceEntries, $rules, $thresholds);
+        $this->indexInputs = $inputs;
+
+        return $this->preparedIndex = $index;
+    }
+
+    private function buildSourceIndex(array $sourceEntries, array $rules, array $thresholds): array
     {
         $index = [
             'rules' => $rules,
@@ -192,7 +235,7 @@ class ChannelMatcher
                 $index['by_regional_alias'][$key][$number] = $source;
             }
         }
-        $index['guide_only'] = $guideEntries === [] ? null : $this->sourceIndex($guideEntries, $rules, $thresholds);
+        $index['guide_only'] = $guideEntries === [] ? null : $this->buildSourceIndex($guideEntries, $rules, $thresholds);
 
         return $index;
     }
@@ -200,20 +243,28 @@ class ChannelMatcher
     /**
      * @param  array<string, mixed>  $sourceIndex
      * @param  array<string, int|float>  $thresholds
-     * @return array{decision: string, tier: int|null, score: int, matched_on: string|null, source: array<string, mixed>|null, candidates?: array<int, array<string, mixed>>}
+     * @return MatchResult
      */
     public function match(Channel $channel, array $sourceIndex, array $thresholds): array
     {
         $rules = $sourceIndex['rules'];
-        $result = $this->matchName($channel, $sourceIndex, $thresholds, $rules);
+        $names = array_map(fn (string $name): array => [
+            'raw' => $name,
+            'normalized' => $this->countryRules->normalize($name, $rules),
+        ], array_values(array_unique([
+            ChannelAttributes::title($channel),
+            (string) ($channel->name_custom ?? $channel->name ?? ''),
+        ])));
+        $result = $this->matchName($channel, $sourceIndex, $thresholds, $names);
         if (! MatchDecision::isConfirmed($result['decision']) && $sourceIndex['guide_only'] !== null) {
-            $guide = $this->matchName($channel, $sourceIndex['guide_only'], $thresholds, $rules);
             // A guide-only fallback needs an exact or structured name match.
-            // Fuzzy similarity cannot introduce a service outside the lineup.
+            // Skip fuzzy work because it cannot introduce a service outside the lineup.
+            $guide = $this->matchName($channel, $sourceIndex['guide_only'], $thresholds, $names, allowFuzzy: false);
             if (MatchDecision::isConfirmed($guide['decision']) && $guide['tier'] <= 3) {
                 $guide['matched_on'] = 'guide:'.$guide['matched_on'];
 
                 $result = $guide;
+                $sourceIndex = $sourceIndex['guide_only'];
             }
         }
 
@@ -222,7 +273,7 @@ class ChannelMatcher
             $key = $result['profile_alias_key'];
             $result['alias_sets'] = $source['profile_aliases'][$key] ?? [];
             // Explicit aliases choose the service; timeshifts still identify a separate feed.
-            $sourceNorm = $this->countryRules->normalize($source['name'], $rules);
+            $sourceNorm = $sourceIndex['norm_by_number'][(int) $source['number']];
             [, $aliasShift] = $this->identityMarkers($key);
             [, $sourceShift] = $this->identityMarkers($sourceNorm);
             if ($aliasShift !== $sourceShift) {
@@ -234,14 +285,17 @@ class ChannelMatcher
         return $result;
     }
 
-    private function matchName(Channel $channel, array $sourceIndex, array $thresholds, array $rules): array
+    /**
+     * Matching order is policy: an earlier identity match takes precedence over
+     * later name heuristics. Guide-only entries stop before fuzzy scoring.
+     *
+     * @param  array<int, array{raw: string, normalized: string}>  $names
+     * @return MatchResult
+     */
+    private function matchName(Channel $channel, array $sourceIndex, array $thresholds, array $names, bool $allowFuzzy = true): array
     {
-        $title = ChannelAttributes::title($channel);
-        $name = (string) ($channel->name_custom ?? $channel->name ?? '');
-        $keys = array_values(array_unique(array_filter([
-            $this->countryRules->normalize($title, $rules),
-            $this->countryRules->normalize($name, $rules),
-        ])));
+        $rules = $sourceIndex['rules'];
+        $keys = array_values(array_unique(array_filter(array_column($names, 'normalized'))));
 
         if ($keys === []) {
             return $this->unmatched();
@@ -313,7 +367,7 @@ class ChannelMatcher
         }
 
         return $this->regionalLabelResult($keys, $sourceIndex)
-            ?? $this->compositeResult([$title, $name], $sourceIndex, $thresholds, $rules)
+            ?? $this->compositeResult($names, $sourceIndex, $thresholds, $rules)
             ?? $this->select($this->lookup(
                 array_filter(array_map(fn (string $key): string => preg_match($rules['presentation_pattern'] ?? '~(?!)~', $key, $m) === 1 ? $m[1] : '', $keys)),
                 $sourceIndex,
@@ -323,7 +377,9 @@ class ChannelMatcher
             ?? $this->abbreviationResult($keys, $sourceIndex, $thresholds)
             // A written guide ID must not replace the provider's original
             // identity evidence when corroborating a primary-service number.
-            ?? $this->fuzzyResult($keys, $sourceIndex, $thresholds, (string) ($channel->stream_id ?: $streamId));
+            ?? ($allowFuzzy
+                ? $this->fuzzyResult($keys, $sourceIndex, $thresholds, (string) ($channel->stream_id ?: $streamId))
+                : $this->unmatched());
     }
 
     /** A remembered ID/number cannot override contradictory identity evidence. */
@@ -473,12 +529,14 @@ class ChannelMatcher
      * A provider may supply alternative labels separated by a slash or a
      * spaced dash. Keep every recognised alternative; two different services
      * require review even when the first label happens to match exactly.
+     *
+     * @param  array<int, array{raw: string, normalized: string}>  $names
      */
     private function compositeResult(array $names, array $sourceIndex, array $thresholds, array $rules): ?array
     {
         $hits = [];
-        foreach (array_unique($names) as $name) {
-            $parts = preg_split('~(?<!\d)/(?!\d)|\s+[-|]\s+~u', $name) ?: [];
+        foreach ($names as $name) {
+            $parts = preg_split('~(?<!\d)/(?!\d)|\s+[-|]\s+~u', $name['raw']) ?: [];
             if (count($parts) < 2 || count($parts) > 4) {
                 continue;
             }
@@ -499,8 +557,8 @@ class ChannelMatcher
         $reason = '';
         // A suffix on the whole label still belongs to the stream. Splitting
         // must never erase a timeshift or a numbered service.
-        foreach (array_unique($names) as $name) {
-            $query = $this->countryRules->normalize($name, $rules);
+        foreach ($names as $name) {
+            $query = $name['normalized'];
             if (count($hits) === 1 && $this->identityMarkers($query) !== $this->identityMarkers(reset($hits)['key'])) {
                 $reason = 'Composite label contains additional channel numbers or timeshifts.';
             }
@@ -571,7 +629,7 @@ class ChannelMatcher
      * @param  array<int, string>  $keys
      * @param  array<string, mixed>  $sourceIndex
      * @param  array<string, int|float>  $thresholds
-     * @return array{decision: string, tier: int|null, score: int, matched_on: string|null, source: array<string, mixed>|null, candidates?: array<int, array<string, mixed>>}
+     * @return MatchResult
      */
     private function fuzzyResult(array $keys, array $sourceIndex, array $thresholds, string $streamId): array
     {
@@ -644,9 +702,9 @@ class ChannelMatcher
     }
 
     /**
-     * @param  array<string, mixed>  $source
-     * @param  array<int, array<string, mixed>>  $candidates
-     * @return array{decision: string, tier: int, score: int, matched_on: string, source: array<string, mixed>, candidates: array<int, array<string, mixed>>}
+     * @param  SourceEntry  $source
+     * @param  list<MatchCandidate>  $candidates
+     * @return MatchResult
      */
     private function matched(string $decision, int $tier, string $matchedOn, array $source, int $score = 100, array $candidates = [], string $reason = ''): array
     {
@@ -672,7 +730,7 @@ class ChannelMatcher
     }
 
     /**
-     * @param  array<int, array<string, mixed>>  $candidates
+     * @param  list<MatchCandidate>  $candidates
      */
     private function candidateSummary(array $candidates): string
     {
@@ -1033,7 +1091,7 @@ class ChannelMatcher
     }
 
     /**
-     * @return array{decision: string, tier: null, score: int, matched_on: null, source: null, candidates: array<int, mixed>}
+     * @return MatchResult
      */
     private function unmatched(int $score = 0, string $reason = 'No confident name or alias match in the selected source.'): array
     {

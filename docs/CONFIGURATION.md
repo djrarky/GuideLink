@@ -8,8 +8,8 @@ Preview Sync shows the proposed changes; Run Sync puts the profile into effect.
 1. Create or edit a profile in **Data → Profiles**. A Guide EPG is required,
    including for native playlist sources. The selected EPG must contain usable
    channel-number-to-stream-ID mappings.
-2. In **Data → Playlists**, choose the profile for the target playlist and enable
-   the assignment. The profile must also be enabled.
+2. In **Data → Playlists**, choose the **GuideLink profile** for the target playlist and enable
+   **Use GuideLink for this playlist**. The profile must also be enabled.
 3. Optionally use **Preview Sync** and inspect **Results** or **Run History**.
    The report includes native playlist layout, auto-merge/scrubber settings and channel metadata
    changes. Preview saves cache/results but does not change native settings,
@@ -55,15 +55,59 @@ disabled until a profile is selected and the playlist is explicitly enabled.
 Playlist rows are not manually created from this table. Clearing an assignment
 resets its GuideLink profile/configuration without removing the playlist row.
 
+### Profile form
+
+The profile form has four open sections:
+
+- **Profile details:** name and whether the profile can be used.
+- **Lineup & programme guide:** lineup source, country and numbered programme guide.
+  Website fields are labelled separately from the reference-playlist field.
+- **Channel handling:** groups, logos, managed layout/imports, the unmatched-channel
+  policy, new imports and exceptions. The import switch stays beside the disabling
+  policy because imports can enable channels before GuideLink next applies a sync.
+- **Backups & stream health:** preferred/backup playlists, hiding backup entries,
+  checker selection and the main stream-check choices.
+
+Downloads, pattern exceptions, matching scope, ordering/numbering, matching rules,
+primary-stream selection, backup rebuilds and stream-check details start collapsed.
+Open a section to change its options; closing it does not reset or disable them.
+Matching rules use comparison scores and safeguards, not percentage weights.
+
+Every option has help underneath it. Existing setting keys, defaults and saved
+values are retained. The download-service API key is masked, with a reveal button;
+this changes its presentation, not its storage. Both source modes still require
+a numbered programme guide.
+
+With the accompanying m3u-editor form update, website settings appear for
+**Listings website**, and **Reference playlist** appears for **Another playlist**.
+The download-service key appears only for a method that requires one. Checker
+controls appear when the selection is blank or names a GuideLink-managed checker;
+user-managed checkers are configured in **Channel Scrubbers**. Report evidence
+remains available in either case. Hidden settings keep their saved and unsaved
+values, so switching back restores your choices.
+
+The loading optimisations and conditional fields require the host update as well
+as this GuideLink update. Older hosts display all fields with the same helpers and
+retain the same sync behavior. No existing profile settings need migrating.
+
+**Save** changes the profile only. **Preview Sync** uses the saved profile and
+records proposed changes (it can also prepare source cache). **Run Sync**, or a
+scheduled sync in **Apply changes** mode, updates the playlists. A provider import
+runs the availability-report hook; it does not apply GuideLink's cleanup policy.
+
+On the plugin Settings tab, task switches stay visible. Cron expressions are in
+**Schedule times**, and the alert reminder interval is in **Reminder options**.
+These schedules use the host scheduler's timezone.
+
 ### Shared channel aliases
 
 In **Data → Alias Sets**, create a named set, choose its country and reference
-Guide EPG, and enable it. **Bundled Defaults** selects its source:
+programme guide, and enable it. **Included alias dataset** selects its source:
 
 - Choose **Sky UK channel aliases** for read-only defaults from the installed JSON.
 - Leave it empty for a custom set managed through **Data → Aliases**.
 
-In **Data → Profiles**, select the desired **Alias Sets**. Several profiles can
+In **Data → Profiles → Channel handling**, select the desired **Channel-name alias sets**. Several profiles can
 share a set, and a profile can select both bundled and custom sets. Run **Preview
 Sync** before applying changes.
 
@@ -87,7 +131,7 @@ Custom aliases remain in the database and survive plugin updates. To add names
 alongside bundled defaults, create a custom set and attach both sets to the profile.
 Custom aliases cannot redirect another channel’s existing name. Choosing a bundled
 dataset on an existing custom set makes its database aliases inactive for that set;
-leave **Bundled Defaults** empty again to use those custom entries.
+leave **Included alias dataset** empty again to use those custom entries.
 
 Use **Actions → Preview Alias Set**, choose a saved set, and open its run to inspect
 the guide channel, guide ID and alternative names. The result includes counts and
@@ -131,13 +175,13 @@ Profiles.
 
 | Setting | Default | Use |
 | --- | --- | --- |
-| Enable Scheduled Availability Report | `false` | Runs the availability report on the Schedule Cron. |
-| Schedule Cron | `0 * * * *` | Availability report cron expression. |
-| Enable Scheduled Sync | `false` | Runs sync preview/apply on the Sync Cron. |
-| Sync Cron | `0 3 * * *` | Sync cron expression. |
-| Scheduled Sync Mode | `Preview Only` | Use `Preview Only` for dry-run reports or `Apply Writes` for scheduled native settings and metadata writes. |
-| Enable Scheduled Source Refresh | `false` | Runs `Refresh Source Cache` on the Source Refresh Cron. |
-| Source Refresh Cron | `30 2 * * *` | Source refresh cron expression. This is separate from Source Cache Days. |
+| Check channels on a schedule | `false` | Run availability reports for eligible playlist assignments at the channel-check schedule. |
+| Channel-check schedule | `0 * * * *` | Cron expression for availability reports. The default runs once per hour. |
+| Sync playlists on a schedule | `false` | Run GuideLink sync for eligible playlist assignments at the sync schedule. |
+| Playlist-sync schedule | `0 3 * * *` | Cron expression for GuideLink sync. The default runs daily at 03:00 in the scheduler's timezone. |
+| Scheduled sync behavior | Preview changes | Choose Preview changes to record proposed edits, or Apply changes to update playlists. |
+| Refresh website lineups on a schedule | `false` | Refresh website lineups used by enabled profiles at the source-refresh schedule. Each profile may reuse a recent saved lineup instead of downloading again. |
+| Lineup-refresh schedule | `30 2 * * *` | Cron expression for source refreshes. The default runs daily at 02:30 in the scheduler's timezone. |
 
 Notes:
 
@@ -145,7 +189,7 @@ Notes:
   `plugins:run-scheduled`.
 - The `playlist.synced` hook is separate from cron. It runs the availability
   report after playlist sync when the playlist has an enabled GuideLink
-  assignment with **Run Availability** enabled. Turning that flag off suppresses
+  assignment with **Include in automatic and batch checks** enabled. Turning that flag off suppresses
   both automatic paths; an explicitly selected manual report can still run.
 - Assigned-playlist actions with no eligible assignments, and source refreshes
   with no enabled scraper profiles, skip quietly without failure/recovery alerts.
@@ -163,8 +207,8 @@ enabled. In-app notifications still work independently.
 
 | Setting | Default | Use |
 | --- | --- | --- |
-| Enable Native Alerts | `true` | Report operational failures, source fallback and recovery. |
-| Alert Reminder Hours | `24` | Remind when an unresolved incident is observed again after this interval, clamped to 1–168 hours. |
+| Notify about problems and recovery | `true` | Report failures, saved-lineup fallback and recovery through m3u-editor notifications and its configured alert channels. Preview and scheduled report failures are included. |
+| Unresolved-problem reminder interval (hours) | `24` | Send another reminder when the same problem is seen after this interval (1–168 hours). New problems, worsening incidents and recovery are reported immediately. Recovery also follows the host notification preferences. |
 
 Alerts cover failed actions and playlist hooks, including invalid configuration
 and failed writes. A source refresh that cannot fetch, parse, validate or save
@@ -208,19 +252,19 @@ plugin code from running still requires the host's own job monitoring.
 
 | Setting | Default | Use |
 | --- | --- | --- |
-| Source Mode | `Scraper Cache` | Use cached provider listings or a native playlist as the canonical source. Both modes require a numbered Guide EPG. |
-| Source Playlist | empty | Required for native playlist mode. Uses enabled live channels with usable channel numbers from the selected playlist. |
-| Country | `UK / Ireland` | Registry-backed country rules for aliases, exclusions, and normalization. |
-| Provider | `Sky` | Registry-backed source provider family for the selected country. |
-| Provider Source | `ViewersVault` | Registry-backed source for the selected provider and country. |
-| Region | `1` | Sky region number or exact region name. Region `7` is Granada. |
-| Scraper Backend | `Direct HTTP` | Registry-backed scraper backend. API-backed scrapers are available for pages that block direct HTTP. |
-| Scraper API Key | empty | Enter the key in this profile for `scrape.do` or `OloStep`. Direct HTTP does not require one. |
-| Scraping Timeout Seconds | `60` | Per-page HTTP timeout. A refresh fetches the region index, a linked regional table when needed, and the channel page. |
-| Source Cache Days | `2` | Cache freshness threshold during source refresh. Set `0` to fetch on each refresh invocation. Sync reuses an existing last-good cache regardless of age. |
-| Scraper Max Retries | `3` | Attempts per page before parsed last-good cache fallback. |
-| Minimum Source Channels | `100` | Rejects suspiciously small source output, including existing caches created under another profile's more permissive settings. |
-| Maximum Drop Percent | `20` | Refuses to replace last-good cache if the parsed channel count drops too far from the previous cache. |
+| Lineup source | Listings website | Use a supported listings website or an existing playlist for channel names, numbers and groups. Both options need a numbered programme guide. |
+| Reference playlist | empty | When the lineup source is Another playlist, choose the playlist to copy the lineup from. Only enabled live channels with usable channel numbers are included. |
+| Country | `UK / Ireland` | Choose the country whose channel naming rules and lineup sources GuideLink should use. |
+| Lineup provider | `Sky` | Choose the television lineup to follow, such as Sky. This is the lineup provider, not your IPTV account provider. |
+| Listings website | `ViewersVault` | Choose the website that supplies the selected provider's channel lineup. |
+| Lineup region | `1` | Enter the provider's region number or exact region name to select the local channel lineup. For Sky, region 7 is Granada. |
+| Download method | `Direct HTTP` | Download directly, or use a supported download service when the listings website blocks direct requests. |
+| Download service API key | empty | Enter the API key for the selected download service. Direct HTTP does not need a key. |
+| Download timeout (seconds) | `60` | Maximum time to wait for each page request. A lineup refresh can download several pages. |
+| Reuse downloaded lineup for (days) | `2` | During a source refresh, reuse a saved lineup younger than this age. Set to 0 to download on every refresh. This does not schedule refreshes. |
+| Download attempts | `3` | Maximum attempts per page, including the first request. Some errors stop attempts early; GuideLink can fall back to a valid saved lineup. |
+| Minimum lineup size | `100` | Reject downloaded or saved website lineups with fewer channels than this. Choose a minimum below the normal size of your lineup. |
+| Maximum lineup reduction (%) | `20` | Keep the previous saved lineup if a refresh loses more than this percentage of its channels. |
 
 Country, provider, source, and scraper options are dynamic. The UI filters
 provider and source choices from the registries and country provider packs, and
@@ -267,6 +311,27 @@ profile's minimum are not considered fresh. Sync rejects an undersized cache
 before changing native settings or disabling channels; refresh it or explicitly
 adjust the profile's minimum first.
 
+Each playlist sync uses one validated source snapshot for preparation and matching.
+Fresh-cache refreshes also read the snapshot once. Within an action, parsed country
+rules are shared, and guide maps, alias preparation and matching indexes reuse
+their most recent result when the complete inputs are unchanged. Source files,
+guide rows and selected alias sets are read again for the next playlist; edits
+invalidate preparation even when timestamps stay the same. Ownership checks and
+each profile's minimum channel count still apply. Reuse does not persist across
+actions or retain every playlist's preparation in memory.
+
+Alias validation batches target reads by guide within each playlist, including
+targets shared by custom and bundled sets. Matching reuses normalized channel
+names and skips fuzzy scoring for guide-only fallbacks, which require an exact
+or structured match.
+
+Channel preparation loads only the fields needed for matching, reporting and
+concurrent-edit checks. Availability reports share failover summaries between
+channel status and source coverage. Setup checks reuse the validated source
+snapshot for freshness and read scrubber columns once per apply operation;
+subsequent operations read current data again. Auto-merge audits scan channel
+records in batches of 500 while keeping duplicate-key counts across batches.
+
 Publishing uses the host's shared cache lock and compares the cache snapshot from
 before fetching. If another refresh has published a snapshot in the meantime,
 the slower run reuses that snapshot instead of overwriting it. A reused snapshot
@@ -293,21 +358,26 @@ are linked from the index and fetched through the selected scraper. The previous
 ViewersVault summary-table format is no longer supported. TV Channel Lists uses
 its own current region summary table.
 
-## Matching And Scope Settings
+## Channel handling
 
 | Setting | Default | Use |
 | --- | --- | --- |
-| Guide EPG | required | Numbered guide EPG used to validate channel numbers and supply consistent stream IDs for auto-merge. Setup and channel review/sync reject missing, unavailable, or unmappable guides. |
-| Include Channel Scrubber Logs | `true` | Include scrubber-related context in availability/repair reporting when m3u-editor exposes it. |
-| Include Group Prefixes | empty | No group-prefix restriction by default. Enter prefixes to narrow scope; exclusions and preserved groups still apply. |
-| Exclude Group Regex | empty | Regex patterns for groups to exclude even if their prefix matches. |
-| Preserve Groups | empty | Exact group names never moved or rewritten. |
-| Preserve Group Name Regex | empty | Regex patterns for groups never moved or rewritten. |
-| Preserve Channel Title Regex | empty | Regex patterns for channels never rewritten. |
-| Include Managed Source Groups | `true` | Includes exact source category names alongside configured prefixes and manages their groups. Off leaves group creation, order, protection, and channel group membership unchanged. |
-| Disable Channels and Groups Without Confirmed Matches | `false` | Disable every channel without a confirmed match, including matches needing review and excluded channels. Block native auto-merge from re-enabling them. With group management enabled, also disable provider groups left empty or containing only quarantined channels after confirmed matches move. Explicit preserve rules still apply. Cleanup is skipped after write failures or cancellation. Saved setting key remains `disable_other_groups`. |
-| Channel Logo Source | `Keep Existing Preference` | Choose EPG or provider logos for accepted matches, including disabled backups. EPG preference is applied with the selected guide association and falls back to provider logos when an EPG icon is missing. Custom logo overrides retain priority. |
-| Repair Mode | `Report Only` | Default repair mode. Apply currently only supports `Report Only` and `Re-enable Master With Enabled Failover`. |
+| Programme guide (EPG) | required | Select a guide with channel numbers that match the lineup. GuideLink uses it to validate matches and assign consistent guide identities. |
+| Include stream-health evidence in reports | `true` | Include available stream-check history in channel availability and repair reports. This does not enable, disable or start stream checks. |
+| Match groups starting with | empty | Enter group-name prefixes, such as UK&#124;, or leave blank for no prefix restriction. Lineup groups are also included when Use lineup groups is on. |
+| Skip matching groups — name patterns | empty | Skip matching channels in groups whose names match these regular expressions. These channels can still be disabled by the unmatched-channel policy; use Exceptions to leave them unchanged. |
+| Groups to leave unchanged | empty | Enter exact group names. GuideLink leaves their matching, metadata and channel/group cleanup unchanged. These exceptions do not undo earlier changes or stop playlist imports and stream checks. |
+| Groups to leave unchanged — name patterns | empty | Leave matching groups and their channels unchanged during GuideLink matching and cleanup. Enter one regular expression per tag. |
+| Channels to leave unchanged — name patterns | empty | Leave channels with matching titles unchanged during GuideLink matching and cleanup. Enter one regular expression per tag. |
+| Use lineup groups | `true` | Move matched channels into the lineup's groups and maintain their group order. When off, GuideLink leaves group assignments and group setup unchanged. |
+| Disable channels without a confirmed match | `false` | When you run Run Sync, or a scheduled sync applies changes, disable unconfirmed channels, including review suggestions and excluded channels. Exceptions below are kept. With Use lineup groups on, also disable eligible provider groups left empty or containing only channels disabled by this policy. Turning this off does not re-enable channels or groups. |
+| Channel logos | Keep each channel's preference | Choose the logo preference for matched channels, including disabled backups. Custom logo overrides are kept; missing guide logos fall back to provider logos. |
+
+The disabling policy also blocks native auto-merge from re-enabling unconfirmed
+channels. It runs only after successful metadata writes; failure or cancellation
+skips cleanup. Turning it off does not re-enable channels or groups. Explicit
+exceptions keep matching, metadata and cleanup unchanged, including any existing
+merge restriction. They do not stop other m3u-editor jobs.
 
 Regex fields accept one pattern per tag, or one per line in a text payload.
 Commas inside patterns are preserved, including quantifiers such as `{1,3}`.
@@ -375,8 +445,8 @@ not automatically re-enable channels or provider groups.
 New channels imported with the native default enabled are evaluated on the next
 GuideLink sync, including channels in disabled provider groups. The
 `playlist.synced` hook performs availability reporting, so it does not apply this
-cleanup by itself. Channels may remain enabled until the next scheduled or manual
-GuideLink sync.
+cleanup by itself. Channels may remain enabled until Run Sync or a scheduled sync applies changes.
+Preview Sync reports the proposed cleanup without disabling channels.
 
 The internal
 `plugin_guidelink_quarantines` table records prior merge preferences. A later
@@ -397,8 +467,7 @@ cancellation is checked before invoking it and again when it returns.
 
 ## Playlist Layout
 
-In **Data → Profiles → Playlist Layout**, **Let GuideLink Manage Playlist
-Layout** is on by default. The defaults keep group/channel order, disable
+In **Data → Profiles → Channel handling**, **Manage playlist layout & imports** is on by default. The defaults keep group/channel order, disable
 automatic numbering and enable newly imported live channels. Explicitly saved
 profile choices take precedence; profiles missing these options inherit the new
 defaults on their next applying sync. Saving a profile does not itself modify
@@ -406,10 +475,10 @@ the playlist; use Preview Sync, then Run Sync.
 
 | Profile setting | Default | Effect while layout management is enabled |
 | --- | --- | --- |
-| Let GuideLink Manage Playlist Layout | `true` | Disable native Channel Auto Sort, Group Auto Sort and Force Channel Number Override. Provider imports retain saved sort order, and output uses the saved guide numbers. |
-| Playlist Output Order | Group Order, Then Channel Order | Disable native Sort by Channel Number and use saved group/channel ordering. Guide Channel Number Order remains available for a flat list. |
-| Automatic Numbering for Missing Numbers | Disable Automatic Numbering | Disable native Auto Channel Number Increment. Enable Automatic Numbering remains available; Keep Existing Preference leaves that field unmanaged. Saved guide numbers are never replaced. |
-| Enable New Live Channels | `true` | Enable live channels discovered in future provider imports. Existing disabled channels remain disabled; VOD and series import preferences are unchanged. |
+| Manage playlist layout & imports | `true` | On Run Sync or a scheduled sync that applies changes, manage playlist ordering, numbering and new live imports. Turn off automatic channel/group sorting and forced numbering; apply the choices below. Ordering and numbering affect the whole playlist, including VOD. Turning this off keeps the last applied settings. |
+| Playlist order | Group order, then channel order | Output a single list in channel-number order, or keep groups together with channels ordered inside each group. |
+| Automatic numbers for unnumbered channels | Off | Control automatic numbering for channels without a saved number. Existing guide numbers and the playlist's starting number are kept. Number-based TVG IDs may still require a number when this is off. |
+| Enable newly imported live channels | `true` | While Manage playlist layout & imports is on, enable live channels discovered in future provider imports. Existing disabled channels stay disabled. New channels can remain enabled until Run Sync or a scheduled sync applies the unmatched-channel policy. |
 
 Installing GuideLink after creating or importing a playlist is supported.
 Installation creates plugin tables, and the Playlists screen prefills disabled,
@@ -446,7 +515,7 @@ rules are not flagged. Preview and checklist runs never write native settings.
 Unresolved conflicts remain warnings on later syncs even when the managed
 settings already match the profile.
 
-## Native Setup Settings
+## Backups & stream health
 
 These profile fields define the desired native m3u-editor settings. Preview Sync
 shows their differences; Run Sync applies them along with channel metadata.
@@ -460,23 +529,23 @@ these native tables and columns when troubleshooting host compatibility.
 
 | Setting | Default | Use |
 | --- | --- | --- |
-| Auto-Merge Preferred Playlist | assigned playlist | Preferred source of primary streams when merging playlists. Catch-up preference and resolution can take priority. |
-| Backup Playlists | empty | Select additional backup playlists by name, in priority order. Leave empty to use only the assigned playlist. |
-| Deactivate Failover Channels | `true` | Hidden-failover policy. Auto-merge disables backup channels after master selection, and GuideLink uses the same policy to keep the scrubber from re-exposing them. |
-| Merge Only New Channels | `false` | Allows complete native rebuilds instead of only handling new channels. |
-| Force Complete Re-Merge | `true` | Rebuild native failover topology fully when requested. |
-| Auto-Merge Key | `stream_id` | Native merge key for live-channel failovers. |
-| Prioritize By Resolution | `true` | Prefer higher-resolution streams using native stream statistics, probing when needed. |
-| Prefer Catch-up As Primary | `true` | Prefer eligible catch-up streams before applying resolution and playlist preferences. |
-| Scrubber-aware Primary Selection | `true` | Exclude channels confirmed dead by the scrubber from primary selection. Existing profiles use this recommendation unless explicitly configured otherwise; Run Sync applies the profile value. |
-| Existing User-managed Scrubber | empty | Leave blank for GuideLink-managed configuration; an explicitly selected user-managed scrubber is audited without being overwritten. |
-| Exclude Disabled Groups From Master Selection | `true` | Avoid selecting channels from disabled groups as masters. |
-| Run Scrubber After Playlist Sync | `true` | Let native scrubber run after playlist sync. |
-| Scan Disabled Channels | `true` | Keeps recovery health state fresh for hidden failover-topology channels. |
-| Disable Dead Channels | `true` | Let native scrubber disable channels whose streams fail probing. |
-| Rebuild Failovers After Scan | `true` | After a successful scrubber scan, rerun native auto-merge with fresh health state so promotions and failover recovery stay topology-aware. |
-| Scrubber Probe Method | `HTTP` | Fast native check method; switch to FFprobe when provider behavior requires it. |
-| Scrubber Probe Timeout Seconds | `10` | Per-stream native scrubber timeout. |
+| Preferred stream playlist | assigned playlist | Prefer primary streams from this playlist. Leave blank to use each assigned playlist. Catch-up and resolution preferences can take priority. |
+| Backup playlists | empty | Choose additional playlists in priority order for backup streams. Leave empty to use channels from the assigned playlist only. |
+| Hide backup entries | `true` | Keep backup streams available for failover while disabling their separate playlist entries. Apply this when m3u-editor next processes backups. |
+| Only process newly imported channels | `false` | Limit backup processing to channels marked as new by m3u-editor. Leave off to include existing eligible channels too. |
+| Reconsider existing backup assignments | `true` | Allow existing backup streams to be reconsidered during the next merge. The new-channels-only restriction still applies when enabled. |
+| Match backup streams by | Stream ID | Choose the identifier m3u-editor uses to group matching streams. Stream ID is the normal choice for GuideLink live channels; TMDB ID requires matching TMDB metadata. |
+| Prefer higher resolution | `true` | Prefer higher-resolution streams when choosing the primary stream. m3u-editor uses saved stream statistics and may probe streams when needed. |
+| Prefer catch-up support | `true` | Prefer eligible streams with catch-up support before applying resolution and playlist preferences. |
+| Avoid primary streams that failed checks | `true` | Exclude streams recorded as failed by the stream checker when choosing a primary stream. This uses saved health results; it does not start a new check. |
+| Stream checker | empty | Leave blank for GuideLink to create or reuse its checker for each assigned playlist. A selected checker must belong to that playlist. GuideLink only changes checkers it manages; edit a user-managed checker in m3u-editor's Channel Scrubbers screen. |
+| Avoid primary streams from disabled groups | `true` | Exclude channels in disabled groups when choosing a primary stream. |
+| Check streams after playlist import | `true` | Run the managed stream checker after m3u-editor imports or refreshes the provider playlist. This is separate from a GuideLink metadata sync. |
+| Include disabled channels in checks | `true` | Check disabled live channels as well as enabled ones, so backup selection can use their latest health results. Checking a recovered stream does not directly re-enable its entry. |
+| Disable streams that fail checks | `true` | Let the managed checker disable channel entries whose streams fail its check. When off, it still records the results without disabling those entries. |
+| Rebuild backups after a successful scan | `true` | After the checker completes successfully, rerun m3u-editor's backup selection using the updated health results. |
+| Stream-check method | HTTP response check | Use an HTTP response check for a quick availability check, or FFprobe to inspect the media stream. |
+| Stream-check timeout (seconds) | `10` | Maximum time allowed for each stream check. Longer timeouts give slow streams more time to respond and can make a scan take longer. |
 
 GuideLink-managed scrubbers always keep direct live-channel re-enable and VOD
 scanning off. Native auto-merge handles primary/failover recovery after scans.
@@ -573,20 +642,38 @@ These are name-identity checks, not verification of the IPTV stream's content.
 
 | Setting | Default | Use |
 | --- | --- | --- |
-| Fuzzy Threshold | `90` | Minimum fuzzy score before a match can be considered. |
-| Minimum Auto Score | `90` | Minimum score for automatic write eligibility. |
-| Minimum Auto Margin | `12` | Required gap between best and next-best fuzzy candidate. |
-| Sort Floor Offset | `10` | Allowed token-sort score gap below the fuzzy threshold. |
-| Minimum Alias Words | `2` | Minimum words for alias matching. |
-| Minimum Alias Characters | `4` | Minimum characters for alias matching. |
-| Minimum Set Tokens | `2` | Minimum token count for set-style matching. |
-| Minimum Ratio Length Ratio | `0.7` | Length-ratio guard for full-ratio matching. |
-| Minimum Ratio Score | `90` | Full-ratio score floor. |
-| Minimum Partial Length Ratio | `0.65` | Length-ratio guard for partial matching. |
-| Minimum Partial Length | `5` | Minimum text length for partial matching. |
-| Minimum Partial Ratio Score | `80` | Partial-ratio score floor. |
-| Maximum Short Token Length | `2` | Tokens at or below this length are treated as short tokens. |
-| Minimum Token Similarity | `60` | Token similarity floor. |
+| Minimum name similarity | `90` | Minimum similarity for an approximate name comparison to become a candidate. Higher values accept fewer name variations; lower values allow more candidates. |
+| Minimum automatic-match score | `90` | Minimum score for accepting scored matches automatically. Higher values can send more candidates for review; exact matches and other identity rules follow their own checks. |
+| Required lead over next candidate | `12` | Normally require the best approximate match to lead the next candidate by this many points. Higher values send more close matches for review. |
+| Word-order score allowance | `10` | Allow the supporting word-order comparison score to fall this many points below Minimum name similarity. Higher values make some approximate matching paths more permissive. |
+| Minimum words for derived name variants | `2` | Use this word count when checking automatically derived name variants. Higher values limit variants that are too short to identify a channel reliably. |
+| Minimum characters for derived name variants | `4` | Use this character count to guard shortened or derived name variants. Higher values reject more short variants and broadcaster-prefix shortcuts. |
+| Minimum lineup-name words for word-set matching | `2` | Require this many words in the lineup name before comparing shared word sets. Higher values limit this method to longer lineup names. |
+| Minimum full-name length ratio | `0.7` | For full-name comparison, require the shorter name to be at least this fraction of the longer name. Higher values allow less difference in length; 0.70 means 70%. |
+| Full-name score without supporting word match | `90` | Require this full-name score when the supporting word-order score is too low. Higher values make this route stricter; Minimum name similarity still applies. |
+| Minimum partial-name length ratio | `0.65` | Before comparing part of a name, require the shorter name to be at least this fraction of the longer name. Higher values allow less difference in length; 0.65 means 65%. |
+| Minimum partial-name length | `5` | Require both names to contain at least this many characters before partial-name comparison. Higher values prevent this method from using very short names. |
+| Supporting full-name score for partial matches | `80` | Require this full-name similarity before accepting evidence from a partial-name comparison. Higher values make partial matching stricter. |
+| Short-word safeguard length | `2` | Treat abbreviations up to this length more cautiously. Higher values extend the safeguard to longer words and can send more ambiguous names for review. |
+| Minimum similarity for spelling differences | `60` | Require this similarity before treating differing words as a small spelling variation. Higher values make the distinguishing-word check stricter. |
+
+The matching scores are points, not probabilities. A score of 90 does not mean
+a 90% chance of the correct identity. Minimum automatic-match score is not a gate
+on every confirmed match: exact matches and identity checks have their own rules.
+Required lead uses word-order-independent scores; a sibling-channel rule can
+accept a smaller lead when the name supplies the distinguishing evidence.
+
+The supporting word-order floor is `max(Minimum name similarity − Word-order
+score allowance, 0)`. Full-name comparison can pass its support guard with either
+that floor or the full-name score. Partial-name comparison needs its supporting
+full-name score and the word-order floor. Length ratios remain decimals: `0.70`
+means 70%, not a stored value of 70.
+
+Derived-name word/character safeguards do not apply to explicit alias entries.
+Some derived-name paths accept enough words **or** characters, while a broadcaster
+prefix shortcut requires enough remaining characters. Short-word safeguards and
+identity checks can still send a high-scoring candidate for review. Preview after
+changing matching rules; lowering a score cannot supply a missing guide identity.
 
 ## Actions
 

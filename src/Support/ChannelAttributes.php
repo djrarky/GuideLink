@@ -6,8 +6,39 @@ use App\Models\Channel;
 use App\Models\Group;
 use App\Models\Playlist;
 
+/**
+ * Shared channel views. DecisionState and NativeMetadata retain raw database
+ * values for stale-plan checks; ChannelReportRow contains display values.
+ * Optional raw fields may be absent on partially selected models.
+ *
+ * @phpstan-type DecisionState array{
+ *     user_id?: int|string, name?: string|null, title?: string|null,
+ *     name_custom?: string|null, title_custom?: string|null,
+ *     stream_id?: string|null, stream_id_custom?: string|null,
+ *     channel?: int|float|string|null, group_id?: int|string|null,
+ *     group_internal?: string|null, is_vod?: bool|int|string|null, group_name: string
+ * }
+ * @phpstan-type NativeMetadata array{
+ *     title_custom?: string|null, name_custom?: string|null,
+ *     channel?: int|float|string|null, sort?: int|float|string|null,
+ *     group_id?: int|string|null, stream_id_custom?: string|null,
+ *     epg_channel_id?: int|string|null, logo_type?: string|null
+ * }
+ * @phpstan-type ChannelReportRow array{
+ *     playlist_id: int, playlist_uuid: string, channel_id: int, channel_uuid: string,
+ *     enabled: bool, channel_number: int|float|string, title: string,
+ *     name: string, group: string, stream_id: string
+ * }
+ */
 class ChannelAttributes
 {
+    public const NAME_FIELDS = ['title', 'title_custom', 'name', 'name_custom'];
+
+    private const DECISION_FIELDS = [
+        'user_id', 'name', 'title', 'name_custom', 'title_custom', 'stream_id',
+        'stream_id_custom', 'channel', 'group_id', 'group_internal', 'is_vod',
+    ];
+
     public const NATIVE_METADATA_FIELDS = [
         'title' => 'title_custom',
         'name' => 'name_custom',
@@ -19,18 +50,30 @@ class ChannelAttributes
         'logo_type' => 'logo_type',
     ];
 
+    /** @return NativeMetadata */
     public static function nativeMetadata(Channel $channel): array
     {
         return array_intersect_key($channel->getRawOriginal(), array_flip(self::NATIVE_METADATA_FIELDS));
     }
 
+    /**
+     * Read preparation must retain every field used by the concurrent-edit checks.
+     *
+     * @return array<int, string>
+     */
+    public static function readColumns(): array
+    {
+        return array_values(array_unique([
+            'id', 'uuid', 'playlist_id', 'enabled', 'can_merge', 'group',
+            ...self::DECISION_FIELDS, ...array_values(self::NATIVE_METADATA_FIELDS),
+        ]));
+    }
+
+    /** @return DecisionState */
     public static function decisionState(Channel $channel): array
     {
         return [
-            ...array_intersect_key($channel->getRawOriginal(), array_fill_keys([
-                'user_id', 'name', 'title', 'name_custom', 'title_custom', 'stream_id',
-                'stream_id_custom', 'channel', 'group_id', 'group_internal', 'is_vod',
-            ], true)),
+            ...array_intersect_key($channel->getRawOriginal(), array_fill_keys(self::DECISION_FIELDS, true)),
             'group_name' => self::groupName($channel),
         ];
     }
@@ -78,7 +121,7 @@ class ChannelAttributes
     }
 
     /**
-     * @return array<string, mixed>
+     * @return ChannelReportRow
      */
     public static function reportRow(Playlist $playlist, Channel $channel): array
     {

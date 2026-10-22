@@ -406,7 +406,8 @@ class AutoMergeSetupService
 
         $channels = (clone $query)
             ->where('can_merge', true)
-            ->get($mergeKey === 'tmdb_id' ? ['tmdb_id'] : ['stream_id', 'stream_id_custom']);
+            ->select($mergeKey === 'tmdb_id' ? ['id', 'tmdb_id'] : ['id', 'stream_id', 'stream_id_custom'])
+            ->lazyById(500);
 
         $keys = [];
         foreach ($channels as $channel) {

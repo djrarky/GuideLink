@@ -139,6 +139,47 @@ class AutoMergeActionPersistenceTest extends PluginFeatureTestCase
         }
     }
 
+    public function test_merge_key_audit_counts_duplicates_across_batches_with_existing_key_semantics(): void
+    {
+        [$context, $playlist] = $this->context();
+        $channels = Channel::factory()->count(502)->make([
+            'user_id' => $context->user->id, 'playlist_id' => $playlist->id, 'group_id' => null,
+            'is_vod' => false, 'can_merge' => true,
+        ])->map(function (Channel $channel, int $i): array {
+            return [...$channel->getAttributes(), 'stream_id' => 'key.'.$i,
+                'stream_id_custom' => null, 'tmdb_id' => $i + 1];
+        })->all();
+        $channels[500]['stream_id_custom'] = ' key.0 ';
+        $channels[500]['tmdb_id'] = 1;
+        $channels[501]['stream_id'] = 'key.1';
+        $channels[501]['stream_id_custom'] = '0'; // Preserve the native falsey custom-ID fallback.
+        $channels[501]['tmdb_id'] = 2;
+        foreach (array_chunk($channels, 100) as $batch) {
+            DB::table('channels')->insert($batch);
+        }
+        $service = new AutoMergeSetupService;
+        $desired = $service->desiredConfig($playlist, [], $context);
+        foreach (['stream_id', 'tmdb_id'] as $mergeKey) {
+            if ($mergeKey === 'tmdb_id') {
+                DB::table('channels')->where('playlist_id', $playlist->id)->update(['is_vod' => true]);
+            }
+            DB::enableQueryLog();
+            DB::flushQueryLog();
+            try {
+                $rows = $service->auditRows($playlist, [...$desired, 'merge_key' => $mergeKey]);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+            $duplicates = collect($rows)->firstWhere('title', 'Duplicate merge keys');
+            $this->assertSame(2, $duplicates['details']['duplicate_key_groups']);
+            $this->assertSame(4, $duplicates['details']['duplicate_channel_count']);
+            $batches = array_filter($queries, fn (array $query): bool => str_contains($query['query'], 'limit 500'));
+            $this->assertCount(2, $batches);
+        }
+    }
+
     public function test_empty_playlist_rebuild_preview_reports_zero_counts(): void
     {
         [$context, $playlist] = $this->context();

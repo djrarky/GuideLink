@@ -69,6 +69,26 @@ class NativeSourceTest extends PluginFeatureTestCase
         $this->assertFalse($loader->entries($payload, $context, [])[0]['guide_valid']);
     }
 
+    public function test_native_source_projection_keeps_custom_names_ids_and_legacy_groups(): void
+    {
+        [$context, $playlist] = $this->context();
+        Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id, 'group_id' => null,
+            'enabled' => true, 'is_vod' => false, 'channel' => 101, 'group_internal' => null,
+            'group' => 'Legacy group', 'title' => 'Provider title', 'title_custom' => 'Custom title',
+            'name' => 'Provider name', 'name_custom' => 'Custom name',
+            'stream_id' => 'provider.id', 'stream_id_custom' => 'custom.id',
+        ]);
+        $entries = (new ParsedSourceLoader(new SourceCacheService))->entries([
+            'source_mode' => 'native_playlist', 'source_playlist_id' => $playlist->id,
+        ], $context, []);
+        $this->assertSame([[
+            'number' => 101, 'name' => 'Custom title', 'category' => 'Legacy group',
+            'aliases' => ['Provider title', 'Provider name', 'Custom name'],
+            'stream_id' => 'custom.id', 'guide_valid' => false,
+        ]], $entries);
+    }
+
     public function test_assigned_runs_and_native_sources_reject_another_users_playlist(): void
     {
         [$context, $playlist] = $this->context(applyPluginSchema: true);

@@ -203,6 +203,7 @@ class ScrubberSetupService
             throw new \RuntimeException('The native channel scrubber table is missing; migrate m3u-editor before applying scrubber setup.');
         }
 
+        $columnKeys = array_fill_keys(Schema::getColumnListing('channel_scrubbers'), true);
         $scrubber = $this->targetScrubber($playlist, $desired);
         if (($desired['scrubber_id'] ?? null) !== null && ! $scrubber instanceof ChannelScrubber) {
             throw new \RuntimeException('The selected scrubber is no longer available for this playlist; review the profile and retry.');
@@ -217,13 +218,13 @@ class ScrubberSetupService
                     'playlist_id' => (int) $playlist->id,
                     'selected_scrubber_id' => $desired['scrubber_id'],
                     'management' => 'user_selected',
-                    'current' => $this->scrubberSnapshot($scrubber),
-                    'desired' => $this->desiredNativeAttributes($playlist, $desired),
+                    'current' => $this->scrubberSnapshot($scrubber, $columnKeys),
+                    'desired' => $this->desiredNativeAttributes($playlist, $desired, $columnKeys),
                 ],
             );
         }
 
-        $attributes = $this->desiredNativeAttributes($playlist, $desired);
+        $attributes = $this->desiredNativeAttributes($playlist, $desired, $columnKeys);
 
         if (! $scrubber instanceof ChannelScrubber) {
             if ($dryRun) {
@@ -266,7 +267,7 @@ class ScrubberSetupService
             );
         }
 
-        $before = $this->scrubberSnapshot($scrubber);
+        $before = $this->scrubberSnapshot($scrubber, $columnKeys);
         $after = [...$before, ...$attributes];
         $changes = $this->changedFields($before, $after);
 
@@ -459,46 +460,36 @@ class ScrubberSetupService
 
     /**
      * @param  array<string, mixed>  $desired
+     * @param  array<string, true>  $columnKeys
      * @return array<string, mixed>
      */
-    private function desiredNativeAttributes(Playlist $playlist, array $desired): array
+    private function desiredNativeAttributes(Playlist $playlist, array $desired, array $columnKeys): array
     {
-        return $this->filterScrubberColumns([
+        return array_intersect_key([
             'name' => $desired['name'],
             'user_id' => (int) $playlist->user_id,
             'playlist_id' => (int) $playlist->id,
             ...array_intersect_key($desired, self::SETTING_ROWS),
-        ]);
+        ], $columnKeys);
     }
 
     /**
-     * @param  array<string, mixed>  $attributes
+     * @param  array<string, true>  $columnKeys
      * @return array<string, mixed>
      */
-    private function filterScrubberColumns(array $attributes): array
-    {
-        return array_intersect_key(
-            $attributes,
-            array_fill_keys(Schema::getColumnListing('channel_scrubbers'), true),
-        );
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function scrubberSnapshot(ChannelScrubber $scrubber): array
+    private function scrubberSnapshot(ChannelScrubber $scrubber, array $columnKeys): array
     {
         $settings = [];
         foreach (array_keys(self::SETTING_ROWS) as $key) {
             $settings[$key] = $this->scrubberValue($scrubber, $key);
         }
 
-        return $this->filterScrubberColumns([
+        return array_intersect_key([
             'name' => (string) $scrubber->name,
             'user_id' => (int) $scrubber->user_id,
             'playlist_id' => (int) $scrubber->playlist_id,
             ...$settings,
-        ]);
+        ], $columnKeys);
     }
 
     /**
@@ -540,7 +531,7 @@ class ScrubberSetupService
         }
     }
 
-    private function isManagedScrubber(?ChannelScrubber $scrubber): bool
+    public function isManagedScrubber(?ChannelScrubber $scrubber): bool
     {
         return $scrubber instanceof ChannelScrubber
             && str_starts_with((string) $scrubber->name, self::MANAGED_NAME_PREFIX);
