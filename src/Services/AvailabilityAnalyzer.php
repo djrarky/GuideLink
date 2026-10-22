@@ -6,6 +6,7 @@ use App\Models\Channel;
 use App\Models\Playlist;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
+use AppLocalPlugins\GuideLink\Support\MatchDecision;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Database\Eloquent\Collection;
 
@@ -96,7 +97,7 @@ class AvailabilityAnalyzer
             $confirmed = [];
             $review = [];
             foreach ($matches as $match) {
-                if (in_array($match['decision'], ['auto_apply', 'fingerprint'], true)) {
+                if (MatchDecision::isConfirmed($match['decision'])) {
                     $confirmed[] = $match;
                 } else {
                     $review[] = $match;

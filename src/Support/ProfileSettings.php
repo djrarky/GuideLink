@@ -142,6 +142,7 @@ final class ProfileSettings
             'playlist_layout_managed' => Options::bool($payload, [], 'playlist_layout_managed', ProfileDefaults::bool('playlist_layout_managed')),
             'playlist_output_order' => in_array($order, ['number', 'group'], true) ? $order : ProfileDefaults::string('playlist_output_order'),
             'playlist_missing_numbers' => in_array($missing, ['preserve', 'enabled', 'disabled'], true) ? $missing : ProfileDefaults::string('playlist_missing_numbers'),
+            'playlist_enable_new_channels' => Options::bool($payload, [], 'playlist_enable_new_channels', ProfileDefaults::bool('playlist_enable_new_channels')),
         ];
     }
 }

@@ -102,12 +102,17 @@ class SyncPlaylistAction extends GuideLinkAction
             $context,
         );
         $writePlan = $writePlans->rows($matchRows, $groupsByName, $rules, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+        $decisions = [...$matchRows, ...$scope['excluded']];
         $quarantinePlan = $quarantine->plan(
-            $playlist, $channels, [...$matchRows, ...$scope['excluded']],
+            $playlist, $channels, $decisions,
             Options::bool($payload, [], 'disable_other_groups', ProfileDefaults::bool('disable_other_groups')),
             $context,
         );
         $quarantineResult = null;
+        $groupDisablePlan = $groupSync->planDisabling(
+            $playlist, $channels, $decisions, $writePlan, $groupPlan, $payload,
+        );
+        $groupDisableResult = null;
         $groupResult = null;
         $writeResult = null;
 
@@ -167,6 +172,7 @@ class SyncPlaylistAction extends GuideLinkAction
                     $scope['excluded'],
                     $writePlan,
                     $quarantinePlan,
+                    $groupDisablePlan,
                 );
 
                 $data = [
@@ -183,7 +189,10 @@ class SyncPlaylistAction extends GuideLinkAction
                     : PluginActionResult::failure('Group setup failed; channel metadata writes were aborted.', $data);
             }
 
-            $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $rules, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+            // Existing and restored groups already have their final IDs in the preview plan.
+            if (isset($groupActionCounts['create'])) {
+                $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $rules, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+            }
 
             $context->checkpoint(82, 'Applying diff-only channel metadata writes.', [
                 'write_plan_channels' => count($writePlan),
@@ -197,6 +206,12 @@ class SyncPlaylistAction extends GuideLinkAction
                 $writeResult['channels_failed'] += $quarantineResult['failed'];
                 $writeResult['errors'] = [...$writeResult['errors'], ...$quarantineResult['errors']];
                 $writeResult['aborted'] = $quarantineResult['aborted'];
+                if (! $quarantineResult['aborted'] && $quarantineResult['failed'] === 0) {
+                    $groupDisableResult = $groupSync->applyDisabling($playlist, $groupDisablePlan, $context);
+                    $groupResult['groups_failed'] += $groupDisableResult['failed'];
+                    $groupResult['errors'] = [...$groupResult['errors'], ...$groupDisableResult['errors']];
+                    $writeResult['aborted'] = $groupDisableResult['aborted'];
+                }
             }
             $writeResult['aborted'] = $writeResult['aborted'] || $context->cancellationRequested();
         }
@@ -225,7 +240,10 @@ class SyncPlaylistAction extends GuideLinkAction
             $scope['excluded'],
             $writePlan,
             $quarantinePlan,
+            $groupDisablePlan,
         );
+        $summary['writes']['groups_to_disable'] = count($groupDisablePlan);
+        $summary['writes']['groups_disabled'] = $groupDisableResult['disabled'] ?? 0;
 
         $data = [
             ...$summary,
@@ -246,8 +264,8 @@ class SyncPlaylistAction extends GuideLinkAction
         if ($summary['writes']['aborted']) {
             return PluginActionResult::cancelled('Sync cancelled; changes already applied have been retained.', $data);
         }
-        if ($summary['writes']['channels_failed'] > 0) {
-            return PluginActionResult::failure('Sync had channel write failures; inspect the write and quarantine results. Successful changes were retained.', $data);
+        if ($summary['writes']['channels_failed'] > 0 || $summary['writes']['groups_failed'] > 0) {
+            return PluginActionResult::failure('Sync had write failures; inspect the channel, quarantine and group results. Successful changes were retained.', $data);
         }
 
         $context->checkpoint(100, $context->dryRun ? 'Sync playlist preview completed.' : 'Sync playlist apply completed.', [
@@ -259,7 +277,7 @@ class SyncPlaylistAction extends GuideLinkAction
         return PluginActionResult::success(
             $context->dryRun
                 ? 'Sync preview completed without changing native settings or channel metadata.'
-                : "Sync completed: {$summary['writes']['channels_written']} channel metadata update(s), {$summary['writes']['unmanaged_channels_disabled']} channel(s) disabled.",
+                : "Sync completed: {$summary['writes']['channels_written']} channel metadata update(s), {$summary['writes']['unmanaged_channels_disabled']} channel(s) and {$summary['writes']['groups_disabled']} provider group(s) disabled.",
             [...$data, 'progress' => 100],
         );
     }

@@ -7,6 +7,7 @@ use App\Models\Playlist;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
+use AppLocalPlugins\GuideLink\Support\MatchDecision;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
@@ -205,11 +206,11 @@ class ChannelMatcher
     {
         $rules = $sourceIndex['rules'];
         $result = $this->matchName($channel, $sourceIndex, $thresholds, $rules);
-        if (! in_array($result['decision'], ['auto_apply', 'fingerprint'], true) && $sourceIndex['guide_only'] !== null) {
+        if (! MatchDecision::isConfirmed($result['decision']) && $sourceIndex['guide_only'] !== null) {
             $guide = $this->matchName($channel, $sourceIndex['guide_only'], $thresholds, $rules);
             // A guide-only fallback needs an exact or structured name match.
             // Fuzzy similarity cannot introduce a service outside the lineup.
-            if (in_array($guide['decision'], ['auto_apply', 'fingerprint'], true) && $guide['tier'] <= 3) {
+            if (MatchDecision::isConfirmed($guide['decision']) && $guide['tier'] <= 3) {
                 $guide['matched_on'] = 'guide:'.$guide['matched_on'];
 
                 $result = $guide;

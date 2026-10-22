@@ -305,7 +305,7 @@ its own current region summary table.
 | Preserve Group Name Regex | empty | Regex patterns for groups never moved or rewritten. |
 | Preserve Channel Title Regex | empty | Regex patterns for channels never rewritten. |
 | Include Managed Source Groups | `true` | Includes exact source category names alongside configured prefixes and manages their groups. Off leaves group creation, order, protection, and channel group membership unchanged. |
-| Disable Excluded and Unmatched Channels | `false` | Disable unmatched channels and prefix, regex, heading, or non-linear exclusions, including channels already in managed groups. Block native auto-merge from re-enabling them. Preserve rules and matches needing review are untouched. Skipped if metadata writes fail or the run is cancelled. Saved setting key remains `disable_other_groups`. |
+| Disable Channels and Groups Without Confirmed Matches | `false` | Disable every channel without a confirmed match, including matches needing review and excluded channels. Block native auto-merge from re-enabling them. With group management enabled, also disable provider groups left empty or containing only quarantined channels after confirmed matches move. Explicit preserve rules still apply. Cleanup is skipped after write failures or cancellation. Saved setting key remains `disable_other_groups`. |
 | Channel Logo Source | `Keep Existing Preference` | Choose EPG or provider logos for accepted matches, including disabled backups. EPG preference is applied with the selected guide association and falls back to provider logos when an EPG icon is missing. Custom logo overrides retain priority. |
 | Repair Mode | `Report Only` | Default repair mode. Apply currently only supports `Report Only` and `Re-enable Master With Enabled Failover`. |
 
@@ -365,7 +365,20 @@ and lock the playlist before applying and saving their audit results.
 Preserve rules take precedence over every exclusion. Quarantine uses matching
 decisions, independently of whether a channel's metadata changed, so an unchanged
 accepted match is not disabled on the next run. Preview results include each
-planned enabled/merge-eligibility change. The internal
+planned enabled/merge-eligibility change and provider-group disable. Matches
+needing review keep their review results while being disabled. Provider groups
+containing preserved channels or confirmed matches that stay in that group are
+left enabled; custom, merged and VOD groups are untouched. Group cleanup runs
+only after channel writes and quarantine succeed. Switching the option off does
+not automatically re-enable channels or provider groups.
+
+New channels imported with the native default enabled are evaluated on the next
+GuideLink sync, including channels in disabled provider groups. The
+`playlist.synced` hook performs availability reporting, so it does not apply this
+cleanup by itself. Channels may remain enabled until the next scheduled or manual
+GuideLink sync.
+
+The internal
 `plugin_guidelink_quarantines` table records prior merge preferences. A later
 accepted match, or switching quarantine off and running sync, restores that
 preference without directly enabling the channel. Channels covered by preserve
@@ -384,19 +397,32 @@ cancellation is checked before invoking it and again when it returns.
 
 ## Playlist Layout
 
-In **Data → Profiles → Playlist Layout**, enable **Let GuideLink Manage Playlist
-Layout** to protect guide order and channel numbers. It is off by default,
-including for existing profiles upgraded from older releases. Saving a profile
-does not itself modify the playlist; use Preview Sync, then Run Sync.
+In **Data → Profiles → Playlist Layout**, **Let GuideLink Manage Playlist
+Layout** is on by default. The defaults keep group/channel order, disable
+automatic numbering and enable newly imported live channels. Explicitly saved
+profile choices take precedence; profiles missing these options inherit the new
+defaults on their next applying sync. Saving a profile does not itself modify
+the playlist; use Preview Sync, then Run Sync.
 
 | Profile setting | Default | Effect while layout management is enabled |
 | --- | --- | --- |
-| Let GuideLink Manage Playlist Layout | `false` | Disable native Channel Auto Sort, Group Auto Sort and Force Channel Number Override. Provider imports retain saved sort order, and output uses the saved guide numbers. |
-| Playlist Output Order | Guide Channel Number Order | Enable native Sort by Channel Number for flat number order. Choose Group Order, Then Channel Order to disable it and use the saved group/channel ordering. |
-| Automatic Numbering for Missing Numbers | Keep Existing Preference | Optionally enable or disable native Auto Channel Number Increment. Keep Existing Preference leaves that field unmanaged. Saved guide numbers are never replaced. |
+| Let GuideLink Manage Playlist Layout | `true` | Disable native Channel Auto Sort, Group Auto Sort and Force Channel Number Override. Provider imports retain saved sort order, and output uses the saved guide numbers. |
+| Playlist Output Order | Group Order, Then Channel Order | Disable native Sort by Channel Number and use saved group/channel ordering. Guide Channel Number Order remains available for a flat list. |
+| Automatic Numbering for Missing Numbers | Disable Automatic Numbering | Disable native Auto Channel Number Increment. Enable Automatic Numbering remains available; Keep Existing Preference leaves that field unmanaged. Saved guide numbers are never replaced. |
+| Enable New Live Channels | `true` | Enable live channels discovered in future provider imports. Existing disabled channels remain disabled; VOD and series import preferences are unchanged. |
 
-These native settings affect the **whole assigned playlist**, including VOD and
-channels outside GuideLink's matching scope. Backup playlists and custom/merged
+Installing GuideLink after creating or importing a playlist is supported.
+Installation creates plugin tables, and the Playlists screen prefills disabled,
+unassigned links to existing playlists. Neither step changes their settings or
+channels. Choose and enable a profile assignment, then apply a sync to use its
+defaults. The import hook reports availability; it does not apply these settings.
+Channels imported while the native Enable New Live Channels setting was off
+remain disabled even if GuideLink subsequently matches them. Enabling future
+imports does not retroactively enable those channels.
+
+The ordering and numbering settings affect the **whole assigned playlist**,
+including VOD and channels outside GuideLink's matching scope. The new-channel
+toggle affects live imports only. Backup playlists and custom/merged
 output playlists have their own settings and are not changed by this option.
 The native starting number and TVG ID output choice remain unchanged; choosing
 number-based TVG IDs in m3u-editor can still number channels without a number.
@@ -514,7 +540,7 @@ Decorative playlist headings such as `#### SPORTS ####` are excluded generically
 Fuzzy matching preserves distinguishing numbers and plus
 suffixes. Channels missing from both the source and selected numbered guide
 cannot be made valid matches by lowering thresholds. Their metadata stays unchanged;
-the optional quarantine policy can disable excluded or unmatched channels.
+the optional quarantine policy disables every channel without a confirmed match.
 Accepted sync matches set both the custom stream ID and the native EPG-channel
 association to the selected Guide EPG record. Preview shows both changes without
 writing them; unresolved matches retain their existing EPG associations.
@@ -571,7 +597,7 @@ records from changes to playlist data, native settings, and saved report rows.
 | --- | --- | --- |
 | Check Channels | Run results only | Reports disabled primaries, failover coverage, scrubber context, and source coverage using the playlist's assigned profile. |
 | Preview Sync | Cache and run results only | Previews native settings, matching, groups, logos, and quarantine changes using the current assigned profile. |
-| Run Sync | Native settings, metadata/groups, quarantine flags/state, cache and run results | Applies opted-in playlist layout, auto-merge/managed scrubber settings, metadata/group writes, and the quarantine policy using the current assigned profile. Requires confirmation; does not start a scan or rebuild. |
+| Run Sync | Native settings, metadata/groups, quarantine flags/state, cache and run results | Applies profile-managed playlist layout/import preferences, auto-merge/managed scrubber settings, metadata/group writes, and the quarantine policy using the current assigned profile. Requires confirmation; does not start a scan or rebuild. |
 | Preview Alias Set | Run history only | Lists guide targets and alternative names for a saved bundled or custom set, including disabled entries. |
 
 Advanced actions are hidden from the primary menu but remain available by action

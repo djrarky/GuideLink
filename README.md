@@ -11,10 +11,10 @@ and keeps their names, numbers, and groups aligned with provider listings.
 - Preview matches and channel changes before applying them.
 - Reject ambiguous source data and stale write plans; retain partial results when a run is cancelled or fails.
 - Choose EPG or provider logos while retaining custom logo overrides.
-- Keep managed groups stable through imports and optionally disable excluded or unmatched channels.
+- Keep managed groups stable through imports and optionally disable channels and provider groups without confirmed matches.
 - Check channel availability and failover coverage.
 - Configure m3u-editor's native auto-merge and scrubber settings.
-- Optionally protect guide order and channel numbers with profile-managed playlist layout settings, with per-setting previews and sorting-conflict reports.
+- Protect guide order and channel numbers with profile-managed playlist defaults, with per-setting previews and sorting-conflict reports. Defaults keep group order, disable automatic numbering and enable future live-channel imports; saved overrides remain available.
 
 ## Requirements
 

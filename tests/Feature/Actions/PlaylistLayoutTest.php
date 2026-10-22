@@ -12,8 +12,11 @@ use App\Models\Channel;
 use App\Models\Group;
 use App\Models\Job;
 use App\Models\Playlist;
+use App\Plugins\PluginSchemaManager;
+use App\Plugins\PluginUiTableRegistry;
 use App\Plugins\Support\PluginExecutionContext;
 use App\Settings\GeneralSettings;
+use AppLocalPlugins\GuideLink\Plugin;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
 use AppLocalPlugins\GuideLink\Services\SetupChecklistService;
@@ -39,9 +42,38 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
         Storage::fake('local');
     }
 
-    public function test_existing_profiles_leave_layout_unchanged_until_opted_in(): void
+    public function test_installing_schema_and_listing_existing_playlists_does_not_change_them(): void
     {
-        [$context, $playlist] = $this->configured();
+        [$context, $playlist] = $this->context();
+        $playlist->forceFill([
+            'auto_sort' => true, 'auto_sort_groups' => true, 'force_channel_numbering' => true,
+            'sort_by_channel_number' => true, 'auto_channel_increment' => true, 'enable_channels' => false,
+        ])->saveQuietly();
+        $channel = Channel::factory()->for($playlist)->createQuietly([
+            'user_id' => $playlist->user_id, 'enabled' => false, 'channel' => 800,
+        ]);
+        $before = [$playlist->refresh()->getAttributes(), $channel->refresh()->getAttributes()];
+        $schema = $this->manifest()['schema'];
+        $context->plugin->forceFill(['schema_definition' => $schema])->save();
+        app(PluginSchemaManager::class)->apply($schema);
+        $this->actingAs($context->user);
+        $table = collect($schema['ui_tables'])->firstWhere('id', 'playlist_assignments');
+        app(PluginUiTableRegistry::class)->prefillRows($context->plugin, $table);
+        app(PluginUiTableRegistry::class)->prefillRows($context->plugin, $table);
+
+        $assignment = DB::table(ProfileRepository::ASSIGNMENTS_TABLE)->sole();
+        $this->assertFalse((bool) $assignment->enabled);
+        $this->assertNull($assignment->extension_plugin_profile_id);
+        $this->assertSame([], (new ProfileRepository)->assignedRuns([], $context, 'sync'));
+        $hook = (new Plugin)->runHook('playlist.synced', ['playlist_id' => $playlist->id], $context);
+        $this->assertTrue($hook->success, $hook->summary);
+        $this->assertTrue($hook->data['skipped']);
+        $this->assertSame($before, [$playlist->refresh()->getAttributes(), $channel->refresh()->getAttributes()]);
+    }
+
+    public function test_explicitly_unmanaged_profiles_leave_layout_and_import_preferences_unchanged(): void
+    {
+        [$context, $playlist] = $this->configured(['playlist_layout_managed' => false]);
         $before = $this->layout($playlist);
         $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
 
@@ -54,7 +86,7 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
 
     public function test_preview_reports_each_setting_and_reason_without_native_writes(): void
     {
-        [$context, $playlist, $channel] = $this->configured(['playlist_layout_managed' => true], dryRun: true);
+        [$context, $playlist, $channel] = $this->configured(dryRun: true);
         $before = [$playlist->getAttributes(), $channel->getAttributes()];
         $result = $this->runGuideLinkAction('sync_playlist', ['playlist_id' => $playlist->id], $context);
 
@@ -62,9 +94,11 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
         $this->assertSame($before, [$playlist->refresh()->getAttributes(), $channel->refresh()->getAttributes()]);
         $layout = $result->data['native_settings']['playlist_layout'];
         $this->assertSame('change_required', $layout['status']);
-        $this->assertCount(4, $layout['details']['changes']);
+        $this->assertCount(6, $layout['details']['changes']);
         $this->assertSame(['from' => true, 'to' => false], $layout['details']['changes']['force_channel_numbering']);
-        $this->assertSame(['from' => false, 'to' => true], $layout['details']['changes']['sort_by_channel_number']);
+        $this->assertSame(['from' => true, 'to' => false], $layout['details']['changes']['sort_by_channel_number']);
+        $this->assertSame(['from' => true, 'to' => false], $layout['details']['changes']['auto_channel_increment']);
+        $this->assertSame(['from' => false, 'to' => true], $layout['details']['changes']['enable_channels']);
         foreach ($layout['details']['checks'] as $check) {
             $this->assertNotEmpty($check['details']['reason']);
             $this->assertArrayHasKey('current', $check['details']);
@@ -76,9 +110,15 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
         }
     }
 
-    public function test_apply_is_idempotent_and_preserves_other_settings_and_playlists(): void
+    public function test_default_apply_is_idempotent_and_preserves_existing_channel_states_and_other_playlists(): void
     {
-        [$context, $playlist] = $this->configured(['playlist_layout_managed' => true]);
+        [$context, $playlist, $channel] = $this->configured();
+        $disabled = Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+            'group' => 'Entertainment', 'group_internal' => 'Entertainment',
+            'enabled' => false, 'is_vod' => false, 'channel' => 800, 'name' => 'BBC One',
+            'title' => 'BBC One', 'name_custom' => null, 'title_custom' => null,
+        ]);
         $backup = Playlist::factory()->for($context->user)->createQuietly();
         $backupBefore = $backup->refresh()->getAttributes();
         $this->settings(['auto_merge_failover_playlist_ids' => [$backup->id]]);
@@ -93,8 +133,11 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
         $this->assertSame('applied', $first->data['native_settings']['playlist_layout']['status']);
         $this->assertSame([
             'auto_sort' => false, 'auto_sort_groups' => false, 'force_channel_numbering' => false,
-            'sort_by_channel_number' => true, 'auto_channel_increment' => true,
+            'sort_by_channel_number' => false, 'auto_channel_increment' => false, 'enable_channels' => true,
         ], $this->layout($playlist));
+        $this->assertTrue((bool) $channel->refresh()->enabled);
+        $this->assertFalse((bool) $disabled->refresh()->enabled);
+        $this->assertSame('bbc.one', $disabled->stream_id_custom, 'Existing disabled channels can be matched without being enabled.');
         $this->assertSame(800, (int) $playlist->channel_start);
         $this->assertSame('stream_id', $playlist->id_channel_by->value);
         $this->assertSame($backupBefore, $backup->refresh()->getAttributes());
@@ -115,12 +158,13 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
     public function test_current_profile_controls_output_and_optional_missing_number_preference(): void
     {
         [$context, $playlist] = $this->configured(['playlist_layout_managed' => true]);
-        foreach ([['group', 'disabled', false], ['number', 'enabled', true], ['group', 'preserve', true]] as [$order, $missing, $increment]) {
-            $this->settings(['playlist_output_order' => $order, 'playlist_missing_numbers' => $missing]);
+        foreach ([['group', 'disabled', false, true], ['number', 'enabled', true, false], ['group', 'preserve', true, true]] as [$order, $missing, $increment, $enableNew]) {
+            $this->settings(['playlist_output_order' => $order, 'playlist_missing_numbers' => $missing, 'playlist_enable_new_channels' => $enableNew]);
             $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
             $this->assertTrue($result->success, $result->summary);
             $this->assertSame($order === 'number', $playlist->refresh()->sort_by_channel_number);
             $this->assertSame($increment, (bool) $playlist->auto_channel_increment);
+            $this->assertSame($enableNew, (bool) $playlist->enable_channels);
         }
 
         // Direct edits are restored while managed; opting out leaves current values alone.
@@ -219,7 +263,7 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
         [$context, $playlist, $channel] = $this->configured(['playlist_layout_managed' => true]);
         $source = Playlist::factory()->for($context->user)->createQuietly();
         $channel->replicate()->forceFill(['playlist_id' => $source->id, 'uuid' => (string) Str::uuid()])->saveQuietly();
-        $this->settings(['source_playlist_id' => $source->id]);
+        $this->settings(['source_playlist_id' => $source->id, 'playlist_output_order' => 'number']);
         $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
         $group = Group::factory()->createQuietly([
             'user_id' => $context->user->id, 'playlist_id' => $playlist->id,
@@ -244,7 +288,7 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
         $this->assignProfile($context, $playlist, ['guide_epg_id' => $this->guideEpgId($context), ...$settings]);
         $playlist->forceFill([
             'auto_sort' => true, 'auto_sort_groups' => true, 'force_channel_numbering' => true,
-            'sort_by_channel_number' => false, 'auto_channel_increment' => true, 'channel_start' => 800,
+            'sort_by_channel_number' => true, 'auto_channel_increment' => true, 'enable_channels' => false, 'channel_start' => 800,
             'id_channel_by' => 'stream_id', 'm3u_enabled' => true, 'enable_proxy' => false,
             'enable_logo_proxy' => false, 'include_series_in_m3u' => false,
         ])->saveQuietly();
@@ -270,7 +314,7 @@ class PlaylistLayoutTest extends PluginFeatureTestCase
     private function layout(Playlist $playlist): array
     {
         return array_map(fn ($value): bool => (bool) $value, $playlist->refresh()->only([
-            'auto_sort', 'auto_sort_groups', 'force_channel_numbering', 'sort_by_channel_number', 'auto_channel_increment',
+            'auto_sort', 'auto_sort_groups', 'force_channel_numbering', 'sort_by_channel_number', 'auto_channel_increment', 'enable_channels',
         ]));
     }
 

@@ -10,8 +10,11 @@ use App\Models\Playlist;
 use AppLocalPlugins\GuideLink\Services\GroupSyncService;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 
 class GroupPlanningTest extends PluginFeatureTestCase
@@ -162,5 +165,113 @@ class GroupPlanningTest extends PluginFeatureTestCase
         $again = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
         $this->assertTrue($again->success, $again->summary);
         $this->assertSame(0, $again->data['writes']['channels_written']);
+    }
+
+    public function test_provider_cleanup_rejects_a_group_renamed_after_planning(): void
+    {
+        [$context, $playlist, $group, $service, $plan] = $this->providerCleanupFixture();
+        $group->forceFill(['name' => 'Keep this group'])->saveQuietly();
+        $result = $service->applyDisabling($playlist, $plan, $context);
+        $this->assertSame(1, $result['failed']);
+        $this->assertTrue((bool) $group->refresh()->enabled);
+    }
+
+    public function test_provider_cleanup_does_not_hide_channels_added_after_planning(): void
+    {
+        [$context, $playlist, $group, $service, $plan] = $this->providerCleanupFixture();
+        $channel = Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+            'group_id' => $group->id, 'enabled' => true, 'is_vod' => false,
+        ]);
+        $this->assertSame(1, $service->applyDisabling($playlist, $plan, $context)['failed']);
+        $channel->forceFill(['enabled' => false, 'can_merge' => false])->saveQuietly();
+        $this->assertSame(1, $service->applyDisabling($playlist, $plan, $context)['failed']);
+        $this->assertTrue((bool) $group->refresh()->enabled);
+    }
+
+    public function test_provider_cleanup_rechecks_cancellation_after_its_heartbeat(): void
+    {
+        [$context, $playlist, $group, $service, $plan] = $this->providerCleanupFixture();
+        Event::listen('eloquent.updated: '.get_class($context->run), function ($run) use ($context): void {
+            if ($run->id === $context->run->id && str_starts_with((string) $run->progress_message, 'Disabling provider groups:')) {
+                DB::table($run->getTable())->where('id', $run->id)->update(['cancel_requested' => true]);
+            }
+        });
+        $result = $service->applyDisabling($playlist, $plan, $context);
+        $this->assertTrue($result['aborted']);
+        $this->assertSame(0, $result['disabled']);
+        $this->assertTrue((bool) $group->refresh()->enabled);
+    }
+
+    public function test_provider_cleanup_replay_does_not_count_another_change(): void
+    {
+        [$context, $playlist, $group, $service, $plan] = $this->providerCleanupFixture();
+        $this->assertSame(1, $service->applyDisabling($playlist, $plan, $context)['disabled']);
+        $again = $service->applyDisabling($playlist, $plan, $context);
+        $this->assertSame(0, $again['disabled']);
+        $this->assertSame(1, $again['skipped']);
+        $this->assertFalse((bool) $group->refresh()->enabled);
+    }
+
+    public function test_provider_cleanup_batches_database_work_for_large_playlists(): void
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
+        $service = new GroupSyncService(new CountryRulesRepository);
+        foreach ([86, 251] as $count) {
+            Group::factory()->count($count)->createQuietly([
+                'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+                'enabled' => true, 'custom' => false, 'type' => 'live',
+            ]);
+            $plan = $service->planDisabling($playlist, new Collection, [], [], [], ['disable_other_groups' => true]);
+            DB::enableQueryLog();
+            try {
+                $result = $service->applyDisabling($playlist, $plan, $context);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+            $this->assertSame($count, $result['disabled']);
+            $this->assertSame(0, $result['failed']);
+            $this->assertLessThanOrEqual(12 * ceil($count / 250), count($queries), 'Cleanup should use bounded batches, including progress and cancellation queries.');
+        }
+    }
+
+    public function test_provider_cleanup_keeps_changed_groups_enabled_while_disabling_safe_groups_in_the_same_batch(): void
+    {
+        [$context, $playlist, $renamed, $service] = $this->providerCleanupFixture();
+        [$imported, $safe, $disabled] = Group::factory()->count(3)->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+            'enabled' => true, 'custom' => false, 'type' => 'live',
+        ]);
+        $plan = $service->planDisabling($playlist, new Collection, [], [], [], ['disable_other_groups' => true]);
+        $renamed->forceFill(['name' => 'Personal channels'])->saveQuietly();
+        $disabled->forceFill(['enabled' => false])->saveQuietly();
+        Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+            'group_id' => $imported->id, 'enabled' => true, 'is_vod' => false,
+        ]);
+        $result = $service->applyDisabling($playlist, $plan, $context);
+        $this->assertSame(1, $result['disabled']);
+        $this->assertSame(1, $result['skipped']);
+        $this->assertSame(2, $result['failed']);
+        $this->assertTrue((bool) $renamed->refresh()->enabled);
+        $this->assertTrue((bool) $imported->refresh()->enabled);
+        $this->assertFalse((bool) $safe->refresh()->enabled);
+        $this->assertFalse((bool) $disabled->refresh()->enabled);
+    }
+
+    private function providerCleanupFixture(): array
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
+        $group = Group::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+            'name' => 'UK| GENERAL', 'enabled' => true, 'custom' => false, 'type' => 'live',
+        ])->refresh();
+        $service = new GroupSyncService(new CountryRulesRepository);
+        $plan = $service->planDisabling($playlist, new Collection, [], [], [], ['disable_other_groups' => true]);
+        $this->assertCount(1, $plan);
+
+        return [$context, $playlist, $group, $service, $plan];
     }
 }

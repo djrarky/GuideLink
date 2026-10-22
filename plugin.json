@@ -1,7 +1,7 @@
 {
   "id": "guidelink",
   "name": "GuideLink",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "api_version": "1.0.0",
   "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
   "entrypoint": "Plugin.php",
@@ -653,10 +653,10 @@
               },
               {
                 "id": "settings.disable_other_groups",
-                "label": "Disable Excluded and Unmatched Channels",
+                "label": "Disable Channels and Groups Without Confirmed Matches",
                 "type": "boolean",
                 "default": false,
-                "helper_text": "Disable unmatched channels and channels excluded by prefixes, group regex, headings, or non-linear rules, and block native auto-merge from re-enabling them. Preserved channels and matches needing review are untouched."
+                "helper_text": "Disable every channel without a confirmed match, including matches needing review, and block native auto-merge from re-enabling it. With group management enabled, also disable provider groups left empty or containing only these disabled channels. Explicit preserve rules still apply."
               },
               {
                 "id": "settings.logo_source",
@@ -706,20 +706,20 @@
           {
             "type": "section",
             "label": "Playlist Layout",
-            "description": "Protect guide order and channel numbers through provider imports and playlist output. Enable management explicitly; these native settings affect the whole assigned playlist, including VOD.",
+            "description": "Manage playlist ordering, numbering and new live-channel imports on Run Sync. Ordering and numbering settings affect the whole assigned playlist, including VOD. Installation alone does not change existing playlists.",
             "fields": [
               {
                 "id": "settings.playlist_layout_managed",
                 "label": "Let GuideLink Manage Playlist Layout",
                 "type": "boolean",
-                "default": false,
-                "helper_text": "Recommended for guide-based layouts. Disables Channel Auto Sort, Group Auto Sort and Force Channel Number Override. Preview Sync shows each change; Run Sync restores managed values on subsequent runs. Turning this off leaves the last applied settings in place."
+                "default": true,
+                "helper_text": "Enabled by default. Disables Channel Auto Sort, Group Auto Sort and Force Channel Number Override, and applies the ordering, numbering and import choices below. Preview Sync shows each change; Run Sync restores managed values. Turning this off leaves the last applied settings in place."
               },
               {
                 "id": "settings.playlist_output_order",
                 "label": "Playlist Output Order",
                 "type": "select",
-                "default": "number",
+                "default": "group",
                 "options": {
                   "number": "Guide Channel Number Order",
                   "group": "Group Order, Then Channel Order"
@@ -730,13 +730,20 @@
                 "id": "settings.playlist_missing_numbers",
                 "label": "Automatic Numbering for Missing Numbers",
                 "type": "select",
-                "default": "preserve",
+                "default": "disabled",
                 "options": {
                   "preserve": "Keep Existing Preference",
                   "enabled": "Enable Automatic Numbering",
                   "disabled": "Disable Automatic Numbering"
                 },
                 "helper_text": "Used only while GuideLink manages layout. Controls Auto Channel Number Increment without replacing saved guide numbers. Keeps the native starting number and TVG ID choice; number-based TVG IDs can still require numbering unnumbered channels."
+              },
+              {
+                "id": "settings.playlist_enable_new_channels",
+                "label": "Enable New Live Channels",
+                "type": "boolean",
+                "default": true,
+                "helper_text": "Used only while GuideLink manages layout. Enable live channels discovered by future provider imports. Existing disabled channels stay disabled. The unmatched-channel policy runs at the next GuideLink sync."
               }
             ]
           },

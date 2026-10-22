@@ -2,15 +2,19 @@
 
 namespace AppLocalPlugins\GuideLink\Services;
 
+use App\Models\Channel;
 use App\Models\Group;
 use App\Models\Playlist;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Support\GroupIdentity;
+use AppLocalPlugins\GuideLink\Support\MatchDecision;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 use AppLocalPlugins\GuideLink\Support\RunCancelled;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 
 class GroupSyncService
@@ -28,6 +32,7 @@ class GroupSyncService
     {
         $rows = [];
         $scope = new ScopeFilter($this->countryRules);
+        $manageGroups = Options::bool($payload, [], 'include_managed_groups', ProfileDefaults::bool('include_managed_groups'));
         $preserveNames = Options::list($payload, [], 'preserve_groups', []);
         $preservePatterns = Options::patterns($payload, [], 'preserve_group_name_regex', []);
 
@@ -35,7 +40,7 @@ class GroupSyncService
             $groupKey = GroupIdentity::key($category);
             $group = $groupsByName[$groupKey] ?? null;
             $currentSort = $group?->sort_order;
-            $preserved = ! Options::bool($payload, [], 'include_managed_groups', ProfileDefaults::bool('include_managed_groups'))
+            $preserved = ! $manageGroups
                 || $scope->preservesGroup($category, $preserveNames, $preservePatterns)
                 || ($group && $scope->preservesGroup((string) $group->name, $preserveNames, $preservePatterns));
             $action = match (true) {
@@ -60,6 +65,112 @@ class GroupSyncService
         }
 
         return $rows;
+    }
+
+    /**
+     * Plan provider group cleanup after confirmed channels move and rejected channels are quarantined.
+     *
+     * @param  Collection<int, Channel>  $channels
+     * @param  array<int, array<string, mixed>>  $decisions
+     * @param  array<int, array<string, mixed>>  $writePlan
+     * @param  array<int, array<string, mixed>>  $groupPlan
+     * @param  array<string, mixed>  $payload
+     * @return array<int, array<string, mixed>>
+     */
+    public function planDisabling(Playlist $playlist, Collection $channels, array $decisions, array $writePlan, array $groupPlan, array $payload): array
+    {
+        if (! Options::bool($payload, [], 'disable_other_groups', ProfileDefaults::bool('disable_other_groups'))
+            || ! Options::bool($payload, [], 'include_managed_groups', ProfileDefaults::bool('include_managed_groups'))) {
+            return [];
+        }
+
+        $decisions = array_column($decisions, null, 'channel_id');
+        $writes = array_column($writePlan, null, 'channel_id');
+        $retainedGroups = array_fill_keys(array_filter(array_column($groupPlan, 'group_id')), true);
+        foreach ($channels as $channel) {
+            if (MatchDecision::shouldQuarantine($decisions[$channel->id] ?? [])) {
+                continue;
+            }
+            $write = $writes[$channel->id] ?? [];
+            $movesGroup = ($write['missing_group'] ?? null) !== null
+                || array_key_exists('group_id', $write['native_changes'] ?? []);
+            if (! $movesGroup && $channel->group_id !== null) {
+                $retainedGroups[$channel->group_id] = true;
+            }
+        }
+
+        $scope = new ScopeFilter($this->countryRules);
+        $preserveNames = Options::list($payload, [], 'preserve_groups', []);
+        $preservePatterns = Options::patterns($payload, [], 'preserve_group_name_regex', []);
+        $rows = [];
+        $groups = Group::query()->where('playlist_id', $playlist->id)->where('user_id', $playlist->user_id)
+            ->where('enabled', true)->where('custom', false)->where('is_merged', false)->whereNull('parent_id')
+            ->where(fn (Builder $query) => $query->whereNull('type')->orWhere('type', 'live'))
+            ->whereDoesntHave('channels', fn (Builder $query) => $query
+                ->where('is_vod', true)->orWhere('playlist_id', '!=', $playlist->id)->orWhere('user_id', '!=', $playlist->user_id))
+            ->orderBy('id')->cursor();
+        foreach ($groups as $group) {
+            if (isset($retainedGroups[$group->id]) || $scope->preservesGroup((string) $group->name, $preserveNames, $preservePatterns)) {
+                continue;
+            }
+            $rows[] = [
+                'group_id' => (int) $group->id,
+                'title' => (string) $group->name,
+                'status' => 'disable',
+                'current' => ['enabled' => true],
+                'desired' => ['enabled' => false],
+                'group_state' => $group->only(['name', 'name_internal', 'custom', 'is_merged', 'parent_id', 'type', 'source_group_id']),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $plan
+     * @return array{disabled: int, skipped: int, failed: int, aborted: bool, errors: array<int, string>}
+     */
+    public function applyDisabling(Playlist $playlist, array $plan, PluginExecutionContext $context): array
+    {
+        $result = ['disabled' => 0, 'skipped' => 0, 'failed' => 0, 'aborted' => false, 'errors' => []];
+        foreach (array_chunk($plan, 250) as $batch) {
+            try {
+                RunProgress::checkCancellation($context);
+                $context->heartbeat('Disabling provider groups: '.($result['disabled'] + $result['skipped'] + $result['failed']).' of '.count($plan).' processed.');
+                $counts = DB::transaction(function () use ($playlist, $batch, $context): array {
+                    $states = array_column($batch, 'group_state', 'group_id');
+                    $groups = Group::query()->where('playlist_id', $playlist->id)->where('user_id', $playlist->user_id)
+                        ->whereKey(array_keys($states))->orderBy('id')->lockForUpdate()->get()
+                        ->filter(fn (Group $group): bool => $group->only(array_keys($states[$group->id])) === $states[$group->id]);
+                    $skipped = $groups->where('enabled', false)->count();
+
+                    RunProgress::checkCancellation($context);
+                    // Check membership in the UPDATE itself so newly imported or unquarantined channels stay visible.
+                    $disabled = Group::query()->whereKey($groups->where('enabled', true)->modelKeys())->whereDoesntHave('channels', function (Builder $query) use ($playlist, $context): void {
+                        $query->where('enabled', true)->orWhere('can_merge', true)->orWhere('is_vod', true)
+                            ->orWhere('playlist_id', '!=', $playlist->id)->orWhere('user_id', '!=', $playlist->user_id)
+                            ->orWhereNotIn('id', DB::table(ChannelQuarantineService::TABLE)
+                                ->where('extension_plugin_id', $context->plugin->id)->where('playlist_id', $playlist->id)->select('channel_id'));
+                    })->update(['enabled' => false]);
+
+                    return ['disabled' => $disabled, 'skipped' => $skipped, 'failed' => count($batch) - $disabled - $skipped];
+                });
+                foreach ($counts as $key => $count) {
+                    $result[$key] += $count;
+                }
+                if ($counts['failed'] > 0) {
+                    $result['errors'][] = "{$counts['failed']} provider group(s) changed or contain channels outside completed quarantine; rerun sync before disabling them.";
+                }
+            } catch (RunCancelled) {
+                $result['aborted'] = true;
+                break;
+            } catch (\Throwable $exception) {
+                $result['failed'] += count($batch);
+                $result['errors'][] = $exception->getMessage();
+            }
+        }
+
+        return $result;
     }
 
     /**

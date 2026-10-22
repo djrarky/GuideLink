@@ -31,11 +31,18 @@ class AvailabilityCoverageTest extends PluginFeatureTestCase
             $this->channel(1, 'GEO TV', true), $this->channel(2, 'BBC One', true), $this->channel(3, 'BBC One HD', false),
         ]), $sources, $matcher->thresholds([], []), $countries->resolve([], []));
 
-        $summary = (new WritePlanBuilder($countries))->summary($playlist, $rows, [], $sources, []);
+        $summary = (new WritePlanBuilder($countries))->summary($playlist, $rows, [], $sources, [
+            ['decision' => 'excluded', 'exclusion_reason' => 'group_prefix', 'enabled' => true],
+            ['decision' => 'excluded', 'exclusion_reason' => 'group_prefix', 'enabled' => false],
+            ['decision' => 'excluded', 'exclusion_reason' => 'group_preserved'],
+        ]);
 
         $this->assertSame(1, $summary['matching']['source_matched']);
         $this->assertSame(1, $summary['matching']['source_needs_review']);
         $this->assertSame(1, $summary['matching']['source_no_iptv_match']);
+        $this->assertSame(2, $summary['matching']['enabled_live_channels']);
+        $this->assertSame(4, $summary['matching']['total_enabled_live_channels']);
+        $this->assertSame(6, $summary['matching']['total_live_channels']);
     }
 
     public function test_ambiguous_enabled_channels_are_review_candidates_not_confirmed_coverage(): void

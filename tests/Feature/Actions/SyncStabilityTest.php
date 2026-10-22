@@ -6,11 +6,13 @@ require_once dirname(__DIR__).'/PluginFeatureTestCase.php';
 
 use App\Enums\ChannelLogoType;
 use App\Jobs\MergeChannels;
+use App\Jobs\ProcessM3uImportChunk;
 use App\Jobs\ProcessM3uImportComplete;
 use App\Models\Channel;
 use App\Models\ChannelFailover;
 use App\Models\EpgChannel;
 use App\Models\Group;
+use App\Models\Job;
 use App\Models\Playlist;
 use App\Plugins\Support\PluginActionResult;
 use App\Plugins\Support\PluginExecutionContext;
@@ -23,7 +25,6 @@ use AppLocalPlugins\GuideLink\Services\RunResultRepository;
 use AppLocalPlugins\GuideLink\Services\SourceCacheService;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -254,15 +255,128 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $this->assertSame('keep_disabled', json_decode($details, true)['repair_action']);
     }
 
-    public function test_needs_review_decisions_do_not_quarantine_channels(): void
+    public function test_needs_review_channels_are_quarantined_without_changing_their_matching_decision(): void
+    {
+        [$context, $playlist] = $this->configured(['disable_other_groups' => true]);
+        $channel = $this->channel($playlist, [
+            'name' => 'BBC One +1', 'title' => 'BBC One +1', 'channel' => 101, 'stream_id_custom' => 'bbc.one',
+        ]);
+        $provider = Group::findOrFail($channel->group_id);
+        $preview = $this->sync($this->previewContext($context), $playlist);
+        $this->assertSame(1, $preview->data['quarantine']['to_disable']);
+        $this->assertSame(1, $preview->data['writes']['groups_to_disable']);
+        $this->assertTrue($channel->refresh()->enabled);
+        $this->assertTrue((bool) $provider->refresh()->enabled);
+        $this->assertDatabaseHas(RunResultRepository::TABLE, [
+            'channel_id' => $channel->id, 'decision' => 'needs_review', 'result_type' => 'sync_match',
+        ]);
+
+        $result = $this->sync($context, $playlist);
+        $this->assertSame(1, $result->data['writes']['unmanaged_channels_disabled']);
+        $this->assertSame(1, $result->data['writes']['groups_disabled']);
+        $this->assertFalse($channel->refresh()->enabled);
+        $this->assertFalse((bool) $channel->can_merge);
+        $this->assertFalse((bool) $provider->refresh()->enabled);
+        $this->assertDatabaseHas(RunResultRepository::TABLE, [
+            'channel_id' => $channel->id, 'decision' => 'needs_review', 'result_type' => 'sync_match',
+        ]);
+        $this->assertDatabaseHas(RunResultRepository::TABLE, [
+            'title' => $provider->name, 'decision' => 'disable', 'result_type' => 'sync_group_disable',
+        ]);
+        $again = $this->sync($context, $playlist);
+        $this->assertSame(0, $again->data['quarantine']['planned']);
+        $this->assertSame(0, $again->data['writes']['groups_to_disable']);
+        $this->assertSame(0, $again->data['writes']['groups_disabled']);
+    }
+
+    public function test_provider_groups_are_disabled_after_confirmed_matches_move_and_empty_groups_are_cleaned_up(): void
     {
         [$context, $playlist] = $this->configured(['disable_other_groups' => true]);
         $channel = $this->channel($playlist);
-        $service = new ChannelQuarantineService;
-        $this->assertSame([], $service->plan($playlist, new Collection([$channel]), [
-            ['channel_id' => $channel->id, 'decision' => 'needs_review', 'exclusion_reason' => ''],
-        ], true, $context));
+        $provider = Group::findOrFail($channel->group_id);
+        $empty = $this->group($playlist, 'UK| EMPTY');
+        $custom = $this->group($playlist, 'Personal', ['custom' => true]);
+        $vod = $this->group($playlist, 'Films', ['type' => 'vod']);
+        $result = $this->sync($context, $playlist);
+        $this->assertSame(2, $result->data['writes']['groups_disabled']);
+        $this->assertFalse((bool) $provider->refresh()->enabled);
+        $this->assertFalse((bool) $empty->refresh()->enabled);
+        $this->assertTrue((bool) $custom->refresh()->enabled);
+        $this->assertTrue((bool) $vod->refresh()->enabled);
         $this->assertTrue($channel->refresh()->enabled);
+        $this->assertSame('Entertainment', Group::findOrFail($channel->group_id)->name);
+        $this->assertTrue((bool) Group::findOrFail($channel->group_id)->enabled);
+    }
+
+    public function test_group_cleanup_respects_preserve_rules_and_the_group_management_opt_out(): void
+    {
+        [$context, $playlist] = $this->configured([
+            'disable_other_groups' => true, 'preserve_groups' => ['Private'],
+            'preserve_group_name_regex' => ['^Personal'], 'preserve_channel_title_regex' => ['^Keep this$'],
+        ]);
+        $groups = [
+            $this->group($playlist, 'Private'),
+            $this->group($playlist, 'Personal channels'),
+            $this->group($playlist, 'UK| preserved title'),
+        ];
+        $preserved = $this->channel($playlist, [
+            'group_id' => $groups[2]->id, 'name' => 'Keep this', 'title' => 'Keep this', 'enabled' => false,
+        ]);
+        $this->sync($context, $playlist);
+        foreach ($groups as $group) {
+            $this->assertTrue((bool) $group->refresh()->enabled);
+        }
+        $this->assertFalse($preserved->refresh()->enabled);
+        $this->assertTrue((bool) $preserved->can_merge);
+
+        $this->settings(['include_managed_groups' => false]);
+        $channel = $this->channel($playlist, ['name' => 'BBC One +1', 'title' => 'BBC One +1']);
+        $provider = Group::findOrFail($channel->group_id);
+        $result = $this->sync($context, $playlist);
+        $this->assertFalse($channel->refresh()->enabled);
+        $this->assertTrue((bool) $provider->refresh()->enabled);
+        $this->assertSame(0, $result->data['writes']['groups_to_disable']);
+    }
+
+    public function test_new_enabled_imports_are_cleaned_up_on_the_next_sync_even_in_a_disabled_provider_group(): void
+    {
+        [$context, $playlist] = $this->configured(['disable_other_groups' => true]);
+        $playlist->forceFill(['enable_channels' => true])->saveQuietly();
+        $provider = $this->group($playlist, 'UK| GENERAL', ['enabled' => false]);
+        $oldJobsConfig = config('database.connections.jobs');
+        config(['database.connections.jobs' => ['driver' => 'sqlite', 'database' => ':memory:', 'prefix' => '']]);
+        DB::purge('jobs');
+        try {
+            $migration = require database_path('migrations/2025_02_13_215803_create_jobs_table.php');
+            $migration->up();
+            $payloads = [];
+            foreach (['BBC One', 'BBC One +1', 'Zebra Boutique'] as $index => $title) {
+                $payloads[] = Channel::factory()->make([
+                    'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+                    'group_id' => $provider->id,
+                    'source_id' => 'new-'.($index + 1), 'name' => $title, 'title' => $title,
+                    'title_custom' => null, 'name_custom' => null, 'stream_id' => 'new-'.($index + 1),
+                    'stream_id_custom' => null, 'channel' => null, 'enabled' => true, 'is_vod' => false,
+                    'can_merge' => true, 'group_internal' => $provider->name,
+                ])->getAttributes();
+            }
+            $job = Job::create([
+                'title' => 'New channels', 'batch_no' => 'new-channels', 'payload' => $payloads,
+                'variables' => ['playlistId' => $playlist->id, 'groupId' => $provider->id, 'groupName' => $provider->name],
+            ]);
+            (new ProcessM3uImportChunk([$job->id], 1))->handle();
+        } finally {
+            DB::purge('jobs');
+            config(['database.connections.jobs' => $oldJobsConfig]);
+        }
+        $this->assertSame(3, $playlist->channels()->where('enabled', true)->count());
+        $result = $this->sync($context, $playlist);
+        $this->assertSame(2, $result->data['writes']['unmanaged_channels_disabled']);
+        $this->assertTrue($playlist->channels()->where('source_id', 'new-1')->firstOrFail()->enabled);
+        $this->assertSame('Entertainment', Group::findOrFail($playlist->channels()->where('source_id', 'new-1')->firstOrFail()->group_id)->name);
+        $this->assertFalse($playlist->channels()->where('source_id', 'new-2')->firstOrFail()->enabled);
+        $this->assertFalse($playlist->channels()->where('source_id', 'new-3')->firstOrFail()->enabled);
+        $this->assertTrue((bool) $playlist->refresh()->enable_channels);
     }
 
     public function test_guide_only_matches_without_a_category_survive_identical_runs(): void
@@ -285,6 +399,7 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $this->sync($context, $playlist);
         $this->assertSame('specialty', $channel->refresh()->stream_id_custom);
         $this->assertSame($originalGroupId, $channel->group_id);
+        $this->assertTrue((bool) Group::findOrFail($originalGroupId)->enabled);
         $again = $this->sync($context, $playlist);
         $this->assertSame(0, $again->data['writes']['channels_written']);
         $this->assertSame(0, $again->data['quarantine']['planned']);
@@ -324,10 +439,13 @@ class SyncStabilityTest extends PluginFeatureTestCase
         [$context, $playlist] = $this->configured();
         $channel = $this->channel($playlist, ['logo_type' => 'epg']);
         $unmatched = $this->channel($playlist, ['title' => 'Zebra Boutique', 'name' => 'Zebra Boutique']);
+        $review = $this->channel($playlist, ['title' => 'BBC One +1', 'name' => 'BBC One +1']);
         $this->sync($context, $playlist);
         $this->assertSame(ChannelLogoType::Epg, $channel->refresh()->logo_type);
         $this->assertTrue($unmatched->refresh()->enabled);
         $this->assertTrue((bool) $unmatched->can_merge);
+        $this->assertTrue($review->refresh()->enabled);
+        $this->assertTrue((bool) Group::findOrFail($review->group_id)->enabled);
         $this->assertDatabaseCount(ChannelQuarantineService::TABLE, 0);
     }
 

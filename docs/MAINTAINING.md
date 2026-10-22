@@ -168,13 +168,13 @@ cd ../podman
   /var/www/html/plugins/guidelink/tests
 ```
 
-Latest workspace run on 2026-10-17: the full plugin suite passed with 194 tests
-and 1,193 assertions under PHP 8.4, using the m3u-editor reference commit
+Latest workspace run on 2026-10-21: the full plugin suite passed with 206 tests
+and 1,324 assertions on each of SQLite and PostgreSQL 16 under PHP 8.4, using the m3u-editor reference commit
 `aa550eeae5a0b1f0907907a63abe1c566025a978` and isolated PostgreSQL 16 and SQLite
 test databases.
 Regression coverage includes native import cleanup and auto-merge, repeated sync,
 legacy group restoration, disabled backups, quarantine (including availability
-repair), native logo fallback, opt-in playlist layout management, native channel
+repair), native logo fallback, profile-managed playlist defaults, native channel
 import and generated M3U ordering/numbering, layout conflict reports and native
 configuration rollback, single playlist-update dispatch, source group
 deduplication, group preservation and avoiding unused failover queries during
@@ -189,6 +189,12 @@ plans and distinct confirmed/review source counts.
 
 Further regression coverage includes:
 
+- Disabling review channels and eligible provider groups, stale group identities,
+  newly imported or unquarantined members, cancellation, replay and batched cleanup.
+- Streamed result serialization across batch boundaries and rollback after later
+  JSON or database failures. Shared decisions preserve matching/report consistency.
+- Installation after playlist import leaves playlists untouched; default layout
+  application preserves existing channel enabled states and explicit profile choices.
 - Cancellation before actions, during source fetch/matching/coverage, and after
   write checkpoints; cancellation never triggers a retry or stale-cache success.
 - Provider identity and target-group changes between planning and writing,

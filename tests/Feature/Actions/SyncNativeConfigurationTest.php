@@ -20,6 +20,7 @@ use AppLocalPlugins\GuideLink\Services\GuideLinkServices;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
 use AppLocalPlugins\GuideLink\Services\ScrubberSetupService;
+use AppLocalPlugins\GuideLink\Services\WritePlanBuilder;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -228,6 +229,9 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
         $services->shouldReceive('channelWriter')->andReturn($writer);
         $services->shouldReceive('channelQuarantine')->andReturn($quarantine);
+        $groups = \Mockery::mock(GroupSyncService::class, [$services->countryRules()])->makePartial();
+        $groups->shouldNotReceive('applyDisabling');
+        $services->shouldReceive('groupSync')->andReturn($groups);
 
         $result = (new SyncPlaylistAction($services))->handle(['playlist_id' => $playlist->id], $context);
 
@@ -257,6 +261,9 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
         $services->shouldReceive('channelWriter')->andReturn($writer);
         $services->shouldReceive('channelQuarantine')->andReturn($quarantine);
+        $groups = \Mockery::mock(GroupSyncService::class, [$services->countryRules()])->makePartial();
+        $groups->shouldNotReceive('applyDisabling');
+        $services->shouldReceive('groupSync')->andReturn($groups);
 
         $result = (new SyncPlaylistAction($services))->handle(['playlist_id' => $playlist->id], $context);
 
@@ -289,6 +296,25 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->assertTrue($result->data['writes']['aborted']);
         $this->assertSame(0, $result->data['writes']['channels_written']);
         $this->assertSame($before, $channel->refresh()->getAttributes());
+    }
+
+    public function test_sync_rebuilds_the_write_plan_only_when_group_ids_need_resolving(): void
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
+        $channel = $this->configure($context, $playlist);
+        foreach ([2, 1] as $expectedBuilds) {
+            $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
+            $plans = \Mockery::mock(WritePlanBuilder::class, [$services->countryRules()])->makePartial();
+            $plans->shouldReceive('rows')->times($expectedBuilds)->passthru();
+            $services->shouldReceive('writePlans')->andReturn($plans);
+
+            $result = (new SyncPlaylistAction($services))->handle(['playlist_id' => $playlist->id], $context);
+
+            $this->assertTrue($result->success, $result->summary);
+            $this->assertSame($expectedBuilds - 1, $result->data['writes']['groups_created']);
+            $this->assertSame(0, $result->data['writes']['missing_groups']);
+            $this->assertSame('Entertainment', Group::findOrFail($channel->refresh()->group_id)->name);
+        }
     }
 
     public function test_first_run_prepares_missing_cache_without_requiring_preview_and_reuses_it(): void

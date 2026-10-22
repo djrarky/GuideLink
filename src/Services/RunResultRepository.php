@@ -5,6 +5,7 @@ namespace AppLocalPlugins\GuideLink\Services;
 use App\Plugins\Support\PluginExecutionContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\LazyCollection;
 
 class RunResultRepository
 {
@@ -21,10 +22,8 @@ class RunResultRepository
         array $channelRows,
         ?array $sourceCoverageRows = null,
     ): array {
-        $rows = [
-            ...$this->mapRows($channelRows, 'availability', 'status'),
-            ...$this->mapRows($sourceCoverageRows ?? [], 'source_coverage', 'status'),
-        ];
+        $rows = $this->mapRows($channelRows, 'availability', 'status')
+            ->concat($this->mapRows($sourceCoverageRows ?? [], 'source_coverage', 'status'));
 
         return $this->replace($context, $playlistId, ['availability', 'source_coverage'], $rows);
     }
@@ -42,6 +41,7 @@ class RunResultRepository
         array $excludedRows,
         array $writePlan,
         array $quarantinePlan = [],
+        array $groupDisablePlan = [],
     ): array {
         $plansByChannel = [];
         foreach ($writePlan as $plan) {
@@ -50,24 +50,23 @@ class RunResultRepository
             }
         }
 
-        $matchRows = array_map(function (array $row) use ($plansByChannel): array {
-            $channelId = (int) ($row['channel_id'] ?? 0);
-
-            return isset($plansByChannel[$channelId])
-                ? [...$row, 'write_plan' => $plansByChannel[$channelId]]
-                : $row;
-        }, $matchRows);
-
         $quarantinesByChannel = array_column($quarantinePlan, null, 'channel_id');
-        $withQuarantine = fn (array $row): array => isset($quarantinesByChannel[$row['channel_id']])
-            ? [...$row, 'quarantine_plan' => $quarantinesByChannel[$row['channel_id']]]
-            : $row;
-        $rows = [
-            ...$this->mapRows(array_map($withQuarantine, $matchRows), 'sync_match', 'decision'),
-            ...$this->mapRows(array_map($withQuarantine, $excludedRows), 'sync_excluded', 'decision'),
-        ];
+        $withPlans = function (array $row) use ($plansByChannel, $quarantinesByChannel): array {
+            $channelId = (int) ($row['channel_id'] ?? 0);
+            if (isset($plansByChannel[$channelId]) && ($row['decision'] ?? '') !== 'excluded') {
+                $row['write_plan'] = $plansByChannel[$channelId];
+            }
+            if (isset($quarantinesByChannel[$channelId])) {
+                $row['quarantine_plan'] = $quarantinesByChannel[$channelId];
+            }
 
-        return $this->replace($context, $playlistId, ['sync_match', 'sync_excluded'], $rows);
+            return $row;
+        };
+        $rows = $this->mapRows($matchRows, 'sync_match', 'decision', $withPlans)
+            ->concat($this->mapRows($excludedRows, 'sync_excluded', 'decision', $withPlans))
+            ->concat($this->mapRows($groupDisablePlan, 'sync_group_disable', 'status'));
+
+        return $this->replace($context, $playlistId, ['sync_match', 'sync_excluded', 'sync_group_disable'], $rows);
     }
 
     /**
@@ -86,21 +85,21 @@ class RunResultRepository
 
     /**
      * @param  array<int, string>  $resultTypes
-     * @param  array<int, array<string, mixed>>  $rows
+     * @param  iterable<array<string, mixed>>  $rows
      * @return array<string, mixed>
      */
     private function replace(
         PluginExecutionContext $context,
         int $playlistId,
         array $resultTypes,
-        array $rows,
+        iterable $rows,
     ): array {
         if (! Schema::hasTable(self::TABLE)) {
             throw new \RuntimeException('GuideLink run-results table is missing; reinstall or repair the plugin schema.');
         }
 
         $now = now();
-        DB::transaction(function () use ($context, $playlistId, $resultTypes, $rows, $now): void {
+        [$typeCounts, $decisionCounts] = DB::transaction(function () use ($context, $playlistId, $resultTypes, $rows, $now): array {
             DB::table(self::TABLE)
                 ->where('extension_plugin_id', $context->plugin->id)
                 ->where('extension_plugin_run_id', $context->run->id)
@@ -109,7 +108,13 @@ class RunResultRepository
                 ->delete();
 
             $chunk = [];
+            $typeCounts = [];
+            $decisionCounts = [];
             foreach ($rows as $row) {
+                $typeCounts[$row['result_type']] = ($typeCounts[$row['result_type']] ?? 0) + 1;
+                if ($row['decision'] !== null && $row['decision'] !== '') {
+                    $decisionCounts[$row['decision']] = ($decisionCounts[$row['decision']] ?? 0) + 1;
+                }
                 $chunk[] = [
                     'extension_plugin_id' => (int) $context->plugin->id,
                     'extension_plugin_run_id' => (int) $context->run->id,
@@ -126,13 +131,9 @@ class RunResultRepository
             if ($chunk !== []) {
                 DB::table(self::TABLE)->insert($chunk);
             }
-        });
 
-        $typeCounts = array_count_values(array_column($rows, 'result_type'));
-        $decisionCounts = array_count_values(array_filter(
-            array_column($rows, 'decision'),
-            fn (?string $decision): bool => $decision !== null && $decision !== '',
-        ));
+            return [$typeCounts, $decisionCounts];
+        });
 
         ksort($decisionCounts);
         ksort($typeCounts);
@@ -141,7 +142,7 @@ class RunResultRepository
             'table' => 'run_results',
             'run_id' => (int) $context->run->id,
             'playlist_id' => $playlistId,
-            'rows' => count($rows),
+            'rows' => array_sum($typeCounts),
             'by_type' => $typeCounts,
             'by_decision' => $decisionCounts,
             'retention' => 'plugin_run',
@@ -150,11 +151,14 @@ class RunResultRepository
 
     /**
      * @param  array<int, array<string, mixed>>  $rows
-     * @return array<int, array<string, mixed>>
+     * @param  (\Closure(array<string, mixed>): array<string, mixed>)|null  $enrich
+     * @return LazyCollection<int, array<string, mixed>>
      */
-    private function mapRows(array $rows, string $resultType, string $decisionKey): array
+    private function mapRows(array $rows, string $resultType, string $decisionKey, ?\Closure $enrich = null): LazyCollection
     {
-        return array_map(function (array $row) use ($resultType, $decisionKey): array {
+        // Enrich and serialize only as the transaction consumes each insert batch.
+        return (new LazyCollection($rows))->map(function (array $row) use ($resultType, $decisionKey, $enrich): array {
+            $row = $enrich ? $enrich($row) : $row;
             $details = array_filter(
                 $row,
                 fn (string|int $key): bool => ! is_string($key) || ! str_starts_with($key, '_'),
@@ -179,7 +183,7 @@ class RunResultRepository
                 ),
                 'details' => json_encode($details, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
             ];
-        }, $rows);
+        });
     }
 
     private function nullableInt(mixed $value): ?int

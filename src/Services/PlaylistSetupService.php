@@ -17,6 +17,7 @@ class PlaylistSetupService
         'force_channel_numbering' => ['Force Channel Number Override', 'Output the saved guide numbers instead of replacing them with sequential numbers.'],
         'sort_by_channel_number' => ['Sort by Channel Number', 'Use the profile output order: flat guide numbers or group order followed by channel order.'],
         'auto_channel_increment' => ['Auto Channel Number Increment', 'Follow the profile preference for filling missing channel numbers; existing guide numbers remain intact.'],
+        'enable_channels' => ['Enable New Live Channels', 'Set the initial enabled state for future live-channel imports without changing existing channel states.'],
     ];
 
     /** @return array<int, string> */
@@ -41,6 +42,7 @@ class PlaylistSetupService
             'auto_sort_groups' => false,
             'force_channel_numbering' => false,
             'sort_by_channel_number' => $settings['playlist_output_order'] === 'number',
+            'enable_channels' => $settings['playlist_enable_new_channels'],
         ];
         if ($settings['playlist_missing_numbers'] !== 'preserve') {
             $fields['auto_channel_increment'] = $settings['playlist_missing_numbers'] === 'enabled';

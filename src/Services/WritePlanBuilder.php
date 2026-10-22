@@ -7,6 +7,7 @@ use App\Models\Playlist;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
 use AppLocalPlugins\GuideLink\Support\CountryRulesRepository;
 use AppLocalPlugins\GuideLink\Support\GroupIdentity;
+use AppLocalPlugins\GuideLink\Support\MatchDecision;
 
 class WritePlanBuilder
 {
@@ -25,7 +26,7 @@ class WritePlanBuilder
         $rows = [];
 
         foreach ($matchRows as $matchRow) {
-            if (! in_array($matchRow['decision'], ['auto_apply', 'fingerprint'], true)) {
+            if (! MatchDecision::isConfirmed($matchRow['decision'])) {
                 continue;
             }
 
@@ -140,12 +141,14 @@ class WritePlanBuilder
         ?array $writeResult = null,
     ): array {
         $decisionCounts = array_count_values(array_column($matchRows, 'decision'));
+        $enabledMatches = 0;
         $matchedSourceNumbers = [];
         $reviewSourceNumbers = [];
         foreach ($matchRows as $row) {
+            $enabledMatches += (int) ($row['enabled'] ?? true);
             $sourceNumber = $row['source_number'] ?? '';
             if ($sourceNumber !== '' && $sourceNumber !== null) {
-                if (in_array($row['decision'], ['auto_apply', 'fingerprint'], true)) {
+                if (MatchDecision::isConfirmed($row['decision'])) {
                     $matchedSourceNumbers[(string) $sourceNumber] = true;
                 } elseif ($row['decision'] === 'needs_review') {
                     $reviewSourceNumbers[(string) $sourceNumber] = true;
@@ -176,8 +179,8 @@ class WritePlanBuilder
                 'name' => (string) $playlist->name,
             ],
             'matching' => [
-                'enabled_live_channels' => count(array_filter($matchRows, fn (array $row): bool => $row['enabled'] ?? true)),
-                'total_enabled_live_channels' => count(array_filter([...$matchRows, ...$excludedRows], fn (array $row): bool => $row['enabled'] ?? true)),
+                'enabled_live_channels' => $enabledMatches,
+                'total_enabled_live_channels' => $enabledMatches + count(array_filter($excludedRows, fn (array $row): bool => $row['enabled'] ?? true)),
                 'total_live_channels' => count($matchRows) + count($excludedRows),
                 'in_scope_channels' => count($matchRows),
                 'excluded_channels' => count($excludedRows),

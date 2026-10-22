@@ -12,6 +12,7 @@ use AppLocalPlugins\GuideLink\Actions\SetupChecklistAction;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
 use AppLocalPlugins\GuideLink\Tests\Feature\PluginFeatureTestCase;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -39,6 +40,41 @@ class RunResultPersistenceTest extends PluginFeatureTestCase
             $this->assertSame($count, DB::table(RunResultRepository::TABLE)->where('result_type', 'availability')->distinct()->count('source_number'));
             $this->assertDatabaseHas(RunResultRepository::TABLE, ['result_type' => 'setup_check', 'title' => 'Keep me']);
         }
+
+        $result = $repository->replaceAvailability($context, $playlist->id, array_slice($rows, 0, 249), array_slice($rows, 249, 2));
+        $this->assertSame(251, $result['rows']);
+        $this->assertSame(['availability' => 249, 'source_coverage' => 2], $result['by_type']);
+        $this->assertSame(['enabled' => 251], $result['by_decision']);
+        $this->assertSame(251, DB::table(RunResultRepository::TABLE)->distinct()->count('source_number'));
+        $this->assertDatabaseCount(RunResultRepository::TABLE, 252);
+        $repository->replaceAvailability($context, $playlist->id, [], []);
+        $this->assertDatabaseCount(RunResultRepository::TABLE, 1);
+    }
+
+    public function test_later_serialization_failure_rolls_back_already_inserted_batches(): void
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true);
+        $repository = new RunResultRepository;
+        $repository->replaceRows($context, $playlist->id, [['status' => 'enabled', 'title' => 'Previous report']], 'availability');
+        $rows = array_fill(0, 250, ['status' => 'enabled', 'title' => 'Replacement']);
+        $rows[] = ['status' => 'enabled', 'title' => 'Invalid UTF-8', 'diagnostics' => "\xB1"];
+        $inserts = 0;
+        DB::listen(function (QueryExecuted $query) use (&$inserts): void {
+            if (str_starts_with($query->sql, 'insert') && str_contains($query->sql, RunResultRepository::TABLE)) {
+                $inserts++;
+            }
+        });
+
+        try {
+            $repository->replaceRows($context, $playlist->id, $rows, 'availability');
+            $this->fail('Expected invalid UTF-8 to reject the second batch.');
+        } catch (\JsonException $exception) {
+            $this->assertSame(JSON_ERROR_UTF8, $exception->getCode());
+        }
+
+        $this->assertSame(1, $inserts, 'The first batch should be inserted before later rows are serialized.');
+        $this->assertDatabaseCount(RunResultRepository::TABLE, 1);
+        $this->assertDatabaseHas(RunResultRepository::TABLE, ['title' => 'Previous report']);
     }
 
     public function test_later_chunk_failure_restores_previous_results_atomically(): void
@@ -115,6 +151,10 @@ class RunResultPersistenceTest extends PluginFeatureTestCase
                 'channel_id' => $matchedChannel->id,
                 'changes' => ['title' => ['from' => 'Matched IPTV', 'to' => 'Canonical Match']],
             ]],
+            [
+                ['channel_id' => $matchedChannel->id, 'action' => 'release'],
+                ['channel_id' => $unknownChannel->id, 'action' => 'quarantine'],
+            ],
         );
 
         $this->assertSame(3, $result['rows']);
@@ -129,6 +169,14 @@ class RunResultPersistenceTest extends PluginFeatureTestCase
             'decision' => 'excluded',
             'reason' => 'group_preserved',
         ]);
+        $details = DB::table(RunResultRepository::TABLE)->where('extension_plugin_run_id', $context->run->id)
+            ->pluck('details', 'channel_id')->map(fn (string $json): array => json_decode($json, true));
+        $this->assertSame('Canonical Match', $details[$matchedChannel->id]['write_plan']['changes']['title']['to']);
+        $this->assertSame('release', $details[$matchedChannel->id]['quarantine_plan']['action']);
+        $this->assertSame('quarantine', $details[$unknownChannel->id]['quarantine_plan']['action']);
+        $this->assertArrayNotHasKey('write_plan', $details[$unknownChannel->id]);
+        $this->assertArrayNotHasKey('write_plan', $details[$protectedChannel->id]);
+        $this->assertArrayNotHasKey('quarantine_plan', $details[$protectedChannel->id]);
 
         $repository->replaceSync($context, (int) $playlist->id, [], [], []);
         $this->assertSame(0, DB::table(RunResultRepository::TABLE)->count());

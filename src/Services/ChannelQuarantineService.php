@@ -7,6 +7,7 @@ use App\Models\Playlist;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
 use AppLocalPlugins\GuideLink\Support\GroupIdentity;
+use AppLocalPlugins\GuideLink\Support\MatchDecision;
 use AppLocalPlugins\GuideLink\Support\RunCancelled;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Database\Eloquent\Collection;
@@ -39,13 +40,13 @@ class ChannelQuarantineService
 
         foreach ($decisions as $decision) {
             $channel = $channels->get($decision['channel_id']);
-            if (! $channel || in_array($decision['exclusion_reason'] ?? '', ['group_preserved', 'title_preserved'], true)) {
+            if (! $channel || MatchDecision::isPreserved($decision)) {
                 continue;
             }
 
             $state = $states->get($channel->id);
-            $quarantine = $enabled && in_array($decision['decision'], ['excluded', 'unmatched'], true);
-            $release = $state && (! $enabled || in_array($decision['decision'], ['auto_apply', 'fingerprint'], true));
+            $quarantine = $enabled && MatchDecision::shouldQuarantine($decision);
+            $release = $state && (! $enabled || MatchDecision::isConfirmed($decision['decision']));
             if ((! $quarantine || ($state && ! $channel->enabled && ! $channel->can_merge)) && ! $release) {
                 continue;
             }

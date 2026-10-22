@@ -160,6 +160,29 @@ before sending the signal; do not reuse a PID from a previous deployment. Custom
 web runtimes should use their own graceful reload procedure. Restarting Horizon
 alone does not clear the web workers' OPcache.
 
+### Upgrading To 0.1.2
+
+Use the reviewed update and worker-reload procedure above. Profiles, assignments,
+custom aliases and source caches remain in place.
+
+- **Disable Channels and Groups Without Confirmed Matches** now includes
+  channels needing review. With group management enabled, it also disables
+  eligible provider groups left empty or containing only channels quarantined
+  by GuideLink. Explicit preserve rules remain exceptions.
+- Profiles without saved layout options now default to managed layout, group
+  order, automatic numbering off and newly imported live channels enabled.
+  Explicit saved choices take precedence. These defaults apply on the next
+  applying sync, including an existing scheduled apply run; installation alone
+  does not change native playlist settings or channels.
+- **Enable New Live Channels** affects future imports only. Existing disabled
+  channels remain disabled even when matched. Ordering and numbering settings
+  affect the whole assigned playlist, including VOD.
+
+Preview the next sync to inspect quarantine, provider-group cleanup and native
+setting changes. Report writes now stream in batches and reuse shared match
+decisions, reducing memory use and repeated queries without changing confirmed
+channel identities.
+
 ### Upgrading From 0.1.0 To 0.1.1
 
 The reviewed update adds plugin-owned quarantine and alert-state tables. Complete approval and
