@@ -189,9 +189,10 @@ custom aliases and source caches remain in place.
   Explicit saved choices take precedence. These defaults apply on the next
   applying sync, including an existing scheduled apply run; installation alone
   does not change native playlist settings or channels.
-- **Enable New Live Channels** affects future imports only. Existing disabled
-  channels remain disabled even when matched. Ordering and numbering settings
-  affect the whole assigned playlist, including VOD.
+- **Enable New Live Channels** affects future imports only. GuideLink sync
+  separately restores confirmed matches to primary/backup selection, including
+  previously disabled channels. Known-dead streams stay off until a later check
+  succeeds. Ordering and numbering affect the whole assigned playlist, including VOD.
 
 Preview the next sync to inspect quarantine, provider-group cleanup and native
 setting changes. Report writes now stream in batches and reuse shared match

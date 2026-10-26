@@ -75,7 +75,7 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $this->assertSame($groupId, $backup->refresh()->group_id);
     }
 
-    public function test_sync_omits_failover_queries_while_availability_retains_failover_details(): void
+    public function test_matching_reads_omit_failovers_while_availability_retains_failover_details(): void
     {
         [$context, $playlist] = $this->configured();
         $primary = $this->channel($playlist);
@@ -84,7 +84,7 @@ class SyncStabilityTest extends PluginFeatureTestCase
 
         DB::enableQueryLog();
         try {
-            $this->sync($context, $playlist);
+            (new ChannelRepository)->liveChannels($playlist, true, includeFailovers: false);
             $failoverQueries = array_filter(DB::getQueryLog(), fn (array $query): bool => str_contains($query['query'], 'channel_failovers'));
         } finally {
             DB::disableQueryLog();
@@ -156,7 +156,7 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $this->assertSame($legacy->id, $primary->refresh()->group_id);
         $this->assertSame($legacy->id, $backup->refresh()->group_id);
         $this->assertFalse($backup->enabled);
-        $this->assertFalse((bool) $backup->can_merge);
+        $this->assertTrue((bool) $backup->can_merge);
         $this->assertTrue($older->refresh()->trashed());
         $this->assertSame(0, $this->sync($context, $playlist)->data['writes']['channels_written']);
     }
@@ -249,18 +249,77 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $this->assertDatabaseCount(ChannelQuarantineService::TABLE, 0);
     }
 
-    public function test_quarantined_channel_can_be_matched_later_without_overriding_manual_merge_opt_outs(): void
+    public function test_quarantined_channel_recovers_when_it_matches_later_even_after_manual_disable(): void
     {
         [$context, $playlist] = $this->configured(['disable_other_groups' => true]);
-        $channel = $this->channel($playlist, ['name' => 'Zebra Boutique', 'title' => 'Zebra Boutique']);
+        $channel = $this->channel($playlist, ['name' => 'Zebra Boutique', 'title' => 'Zebra Boutique', 'can_merge' => false]);
         $this->sync($context, $playlist);
         $this->assertFalse((bool) $channel->refresh()->can_merge);
         $channel->forceFill(['title' => 'BBC One', 'name' => 'BBC One'])->saveQuietly();
         $this->sync($context, $playlist);
         $this->assertTrue((bool) $channel->refresh()->can_merge);
-        $this->assertFalse($channel->enabled);
+        $this->assertTrue($channel->enabled);
         $this->assertSame('bbc.one', $channel->stream_id_custom);
         $this->assertDatabaseCount(ChannelQuarantineService::TABLE, 0);
+    }
+
+    public function test_disabled_matches_recover_to_one_primary_and_native_backups_without_repeat_writes(): void
+    {
+        [$context, $playlist] = $this->configured();
+        $primary = $this->channel($playlist, ['enabled' => false, 'can_merge' => false, 'last_scrubber_live' => true]);
+        $backup = $this->channel($playlist, ['enabled' => false, 'can_merge' => false, 'last_scrubber_live' => true]);
+        $dead = $this->channel($playlist, ['enabled' => true, 'last_scrubber_live' => false]);
+        $before = $primary->getAttributes();
+        $preview = $this->sync($this->previewContext($context), $playlist);
+        $this->assertSame(3, $preview->data['matched_recovery']['candidates']);
+        $this->assertSame($before, $primary->refresh()->getAttributes());
+        $this->assertDatabaseCount('channel_failovers', 0);
+
+        $result = $this->sync($context, $playlist);
+        $this->assertTrue($primary->refresh()->enabled);
+        $this->assertTrue((bool) $primary->can_merge);
+        $this->assertFalse($backup->refresh()->enabled);
+        $this->assertTrue((bool) $backup->can_merge);
+        $this->assertFalse($dead->refresh()->enabled);
+        $this->assertSame(1, $result->data['matched_recovery']['enabled']);
+        $this->assertSame(1, $result->data['matched_recovery']['disabled']);
+        $this->assertDatabaseHas('channel_failovers', ['channel_id' => $primary->id, 'channel_failover_id' => $backup->id]);
+        $this->assertDatabaseHas('channel_failovers', ['channel_id' => $primary->id, 'channel_failover_id' => $dead->id]);
+        $before = [$primary->getAttributes(), $backup->getAttributes(), $dead->getAttributes()];
+        $again = $this->sync($context, $playlist);
+        $this->assertSame(0, $again->data['matched_recovery']['enabled']);
+        $this->assertSame(0, $again->data['matched_recovery']['disabled']);
+        $this->assertSame(0, $again->data['matched_recovery']['merge_restored']);
+        $this->assertSame($before, [$primary->refresh()->getAttributes(), $backup->refresh()->getAttributes(), $dead->refresh()->getAttributes()]);
+    }
+
+    public function test_a_dead_standalone_match_stays_off_until_a_later_probe_succeeds(): void
+    {
+        [$context, $playlist] = $this->configured();
+        $channel = $this->channel($playlist, ['enabled' => false, 'last_scrubber_live' => false]);
+        $this->sync($context, $playlist);
+        $this->assertFalse($channel->refresh()->enabled);
+        $channel->forceFill(['last_scrubber_live' => true])->saveQuietly();
+        $this->sync($context, $playlist);
+        $this->assertTrue($channel->refresh()->enabled);
+    }
+
+    public function test_recovery_uses_native_quality_ranking_and_keeps_identical_urls_hidden(): void
+    {
+        [$context, $playlist] = $this->configured();
+        $low = $this->channel($playlist, ['enabled' => true, 'stream_stats' => [
+            ['stream' => ['codec_type' => 'video', 'width' => 1280, 'height' => 720]],
+        ]]);
+        $high = $this->channel($playlist, ['enabled' => false, 'can_merge' => false, 'stream_stats' => [
+            ['stream' => ['codec_type' => 'video', 'width' => 1920, 'height' => 1080]],
+        ]]);
+        $duplicate = $this->channel($playlist, ['url' => $high->url, 'enabled' => true]);
+        $this->sync($context, $playlist);
+        $this->assertTrue($high->refresh()->enabled);
+        $this->assertFalse($low->refresh()->enabled);
+        $this->assertFalse($duplicate->refresh()->enabled);
+        $this->assertDatabaseHas('channel_failovers', ['channel_id' => $high->id, 'channel_failover_id' => $low->id]);
+        $this->assertDatabaseMissing('channel_failovers', ['channel_id' => $high->id, 'channel_failover_id' => $duplicate->id]);
     }
 
     public function test_availability_repair_does_not_reenable_quarantined_channels_with_enabled_failovers(): void
@@ -509,6 +568,7 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $group = $this->group($playlist, 'UK| GENERAL');
 
         return Channel::factory()->createQuietly([
+            'uuid' => null,
             'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id, 'group_id' => $group->id,
             'group_internal' => $group->name, 'title' => 'BBC One', 'name' => 'BBC One',
             'title_custom' => null, 'name_custom' => null, 'stream_id' => 'provider-id', 'stream_id_custom' => null,

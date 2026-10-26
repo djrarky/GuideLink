@@ -58,6 +58,11 @@ class GuideLinkServices
         return new ChannelQuarantineService;
     }
 
+    public function matchedChannelRecovery(): MatchedChannelRecoveryService
+    {
+        return new MatchedChannelRecoveryService;
+    }
+
     public function countryRules(): CountryRulesRepository
     {
         return $this->rules ??= new CountryRulesRepository;

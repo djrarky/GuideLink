@@ -311,6 +311,9 @@ class ChannelMatcher
         ) {
             $source = $sourceIndex['by_stream_id'][$streamId];
             $reason = $this->fingerprintReviewReason($keys, $source, $sourceIndex, $thresholds, (string) ($channel->stream_id ?: $streamId));
+            if ($reason !== '' && ($replacement = $this->rematchStoredFingerprint($channel, $keys, $sourceIndex, $thresholds))) {
+                return $replacement;
+            }
 
             return $this->matched($reason === '' ? 'fingerprint' : 'needs_review', 1, $streamId, $source, 100, [], $reason);
         }
@@ -386,9 +389,9 @@ class ChannelMatcher
     private function fingerprintReviewReason(array $keys, array $source, array $index, array $thresholds, string $streamId): string
     {
         $sourceNorm = $index['norm_by_number'][(int) $source['number']];
-        [$sourceNumbers, $sourceShift] = $this->identityMarkers($sourceNorm);
+        [, $sourceShift] = $this->identityMarkers($sourceNorm);
         foreach ($keys as $key) {
-            [$numbers, $shift] = $this->identityMarkers($key);
+            [, $shift] = $this->identityMarkers($key);
             if ($shift !== $sourceShift) {
                 return 'Fingerprint conflicts with the channel timeshift identity.';
             }
@@ -398,15 +401,59 @@ class ChannelMatcher
                     return 'Fingerprint conflicts with a name identifying another source channel.';
                 }
             }
-            if ($numbers !== $sourceNumbers && ! isset($hits[(int) $source['number']])) {
+            if (! isset($hits[(int) $source['number']])) {
                 $reason = $this->fuzzyReviewReason($key, $source, $index, $thresholds, $streamId);
                 if ($reason !== '') {
-                    return 'Fingerprint conflicts with the numbered channel identity.';
+                    return 'Fingerprint conflicts with the channel name: '.$reason;
                 }
             }
         }
 
         return '';
+    }
+
+    /**
+     * Guide numbers can be reassigned. Replace an old custom mapping only when
+     * every provider and display name identifies the same current service.
+     * Fuzzy similarity cannot justify moving a channel to another guide slot.
+     *
+     * @return MatchResult|null
+     */
+    private function rematchStoredFingerprint(Channel $channel, array $keys, array $index, array $thresholds): ?array
+    {
+        if (! $channel->stream_id_custom || $channel->stream_id_custom === $channel->stream_id) {
+            return null;
+        }
+        $providerKeys = array_values(array_filter(array_map(
+            fn (?string $name): string => $this->countryRules->normalize($name ?? '', $index['rules']),
+            [$channel->title, $channel->name],
+        )));
+        if ($providerKeys === []) {
+            return null;
+        }
+
+        $keys = array_values(array_unique([...$keys, ...$providerKeys]));
+        $hits = [];
+        foreach ($keys as $key) {
+            $nameHits = $this->lookup([$key], $index, 'by_compact') + $this->lookup([$key], $index, 'by_profile_compact');
+            if (count($nameHits) !== 1) {
+                return null;
+            }
+            $hits += $nameHits;
+        }
+        if (count($hits) !== 1) {
+            return null;
+        }
+        $source = reset($hits)['source'];
+        $providerSource = $index['by_stream_id'][$channel->stream_id] ?? null;
+        if ($providerSource && (int) $providerSource['number'] !== (int) $source['number']) {
+            return null;
+        }
+        if ($this->fingerprintReviewReason($keys, $source, $index, $thresholds, (string) $channel->stream_id) !== '') {
+            return null;
+        }
+
+        return $this->select($hits, 'remapped_name', 2);
     }
 
     /** Collect distinct services without choosing a winner during lookup. */

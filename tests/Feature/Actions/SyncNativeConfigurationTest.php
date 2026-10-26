@@ -17,6 +17,7 @@ use AppLocalPlugins\GuideLink\Services\ChannelQuarantineService;
 use AppLocalPlugins\GuideLink\Services\ChannelWriter;
 use AppLocalPlugins\GuideLink\Services\GroupSyncService;
 use AppLocalPlugins\GuideLink\Services\GuideLinkServices;
+use AppLocalPlugins\GuideLink\Services\MatchedChannelRecoveryService;
 use AppLocalPlugins\GuideLink\Services\ProfileRepository;
 use AppLocalPlugins\GuideLink\Services\RunResultRepository;
 use AppLocalPlugins\GuideLink\Services\ScrubberSetupService;
@@ -229,6 +230,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
         $services->shouldReceive('channelWriter')->andReturn($writer);
         $services->shouldReceive('channelQuarantine')->andReturn($quarantine);
+        $services->shouldNotReceive('matchedChannelRecovery');
         $groups = \Mockery::mock(GroupSyncService::class, [$services->countryRules()])->makePartial();
         $groups->shouldNotReceive('applyDisabling');
         $services->shouldReceive('groupSync')->andReturn($groups);
@@ -261,6 +263,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
         $services->shouldReceive('channelWriter')->andReturn($writer);
         $services->shouldReceive('channelQuarantine')->andReturn($quarantine);
+        $services->shouldNotReceive('matchedChannelRecovery');
         $groups = \Mockery::mock(GroupSyncService::class, [$services->countryRules()])->makePartial();
         $groups->shouldNotReceive('applyDisabling');
         $services->shouldReceive('groupSync')->andReturn($groups);
@@ -274,6 +277,29 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->assertDatabaseHas(RunResultRepository::TABLE, [
             'extension_plugin_run_id' => $context->run->id, 'result_type' => 'sync_match',
         ]);
+    }
+
+    public function test_failed_recovery_reports_the_error_and_blocks_provider_group_cleanup(): void
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
+        $this->configure($context, $playlist, ['disable_other_groups' => true]);
+        $services = \Mockery::mock(GuideLinkServices::class)->makePartial();
+        $recovery = \Mockery::mock(MatchedChannelRecoveryService::class);
+        $recovery->shouldReceive('apply')->once()->andReturn([
+            'candidates' => 1, 'merge_restored' => 0, 'enabled' => 0, 'disabled' => 0,
+            'failed' => 1, 'aborted' => false, 'errors' => ['Synthetic recovery failure'],
+        ]);
+        $services->shouldReceive('matchedChannelRecovery')->andReturn($recovery);
+        $groups = \Mockery::mock(GroupSyncService::class, [$services->countryRules()])->makePartial();
+        $groups->shouldNotReceive('applyDisabling');
+        $services->shouldReceive('groupSync')->andReturn($groups);
+
+        $result = (new SyncPlaylistAction($services))->handle(['playlist_id' => $playlist->id], $context);
+
+        $this->assertSame('failed', $result->status);
+        $this->assertSame(1, $result->data['writes']['channels_failed']);
+        $this->assertContains('Synthetic recovery failure', $result->data['writes']['errors']);
+        $this->assertSame(1, $result->data['matched_recovery']['failed']);
     }
 
     public function test_cancellation_during_group_setup_is_reported_as_cancelled(): void

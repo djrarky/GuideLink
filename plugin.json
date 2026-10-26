@@ -1,7 +1,7 @@
 {
   "id": "guidelink",
   "name": "GuideLink",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "api_version": "1.0.0",
   "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
   "entrypoint": "Plugin.php",
@@ -706,7 +706,7 @@
                 "label": "Enable newly imported live channels",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "While Manage playlist layout & imports is on, enable live channels discovered in future provider imports. Existing disabled channels stay disabled. New channels can remain enabled until Run Sync or a scheduled sync applies the unmatched-channel policy."
+                "helper_text": "While Manage playlist layout & imports is on, enable live channels discovered in future provider imports. This import setting does not change existing channels. Run Sync separately recovers confirmed matches and applies the unmatched-channel policy."
               },
               {
                 "id": "settings.preserve_groups",
@@ -969,7 +969,7 @@
                 "label": "Hide backup entries",
                 "type": "boolean",
                 "default": true,
-                "helper_text": "Keep backup streams available for failover while disabling their separate playlist entries. Apply this when m3u-editor next processes backups."
+                "helper_text": "Keep backup streams available for failover while disabling their separate playlist entries. Applies during GuideLink sync recovery and native backup processing."
               },
               {
                 "type": "section",
@@ -983,7 +983,7 @@
                     "label": "Prefer higher resolution",
                     "type": "boolean",
                     "default": true,
-                    "helper_text": "Prefer higher-resolution streams when choosing the primary stream. m3u-editor uses saved stream statistics and may probe streams when needed."
+                    "helper_text": "Prefer higher-resolution streams when choosing the primary stream. GuideLink sync uses saved statistics; separate native merge jobs may probe when needed."
                   },
                   {
                     "id": "settings.auto_merge_prefer_catchup_as_primary",
@@ -1004,7 +1004,7 @@
                     "label": "Avoid primary streams that failed checks",
                     "type": "boolean",
                     "default": true,
-                    "helper_text": "Exclude streams recorded as failed by the stream checker when choosing a primary stream. This uses saved health results; it does not start a new check."
+                    "helper_text": "Exclude failed streams during native primary selection. GuideLink sync recovery always keeps known-dead entries off. Uses saved health results; does not start a new check."
                   }
                 ]
               },
@@ -1649,7 +1649,7 @@
           "label_attribute": "name",
           "scope": "owned",
           "required": false,
-          "helper_text": "Uses the assigned profile to preview native auto-merge, managed scrubber, and channel metadata changes. Does not start a scan."
+          "helper_text": "Preview profile settings, channel matching, quarantine and recovery candidates. Does not start a scan or change channels."
         },
         {
           "id": "assigned_playlists",
@@ -1675,7 +1675,7 @@
           "label_attribute": "name",
           "scope": "owned",
           "required": false,
-          "helper_text": "Uses the assigned profile to apply native auto-merge, managed scrubber, and channel metadata changes. Does not start a scan."
+          "helper_text": "Apply profile settings, update channel metadata and quarantine, then recover confirmed matches as primaries or backups. Uses saved stream-check results; does not start a scan."
         },
         {
           "id": "assigned_playlists",

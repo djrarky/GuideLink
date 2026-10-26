@@ -37,13 +37,14 @@ action's `GuideLinkServices` factory throughout the batch.
 | Prepare source | `SourceCacheService`, `SourceRefreshService`, `ParsedSourceLoader`, `ProfileAliasResolver` | Validate source data, add current guide identities and apply valid profile aliases. |
 | Select and match | `ChannelRepository`, `ScopeFilter`, `ChannelMatcher` | Read live channels, record exclusions and produce matching decisions without editing channels. |
 | Plan changes | `WritePlanBuilder`, `GroupSyncService`, `ChannelQuarantineService` | Calculate metadata differences, managed groups, quarantine and eligible provider-group cleanup. |
-| Apply native settings | `PlaylistSetupService`, `AutoMergeSetupService`, `ScrubberSetupService` | Apply profile configuration and save its audit records. Sync does not start a scan or failover rebuild. |
-| Apply channel policy | `GroupSyncService`, `ChannelWriter`, `ChannelQuarantineService` | Ensure destination groups exist, update metadata, then quarantine channels and disable eligible provider groups. |
+| Apply native settings | `PlaylistSetupService`, `AutoMergeSetupService`, `ScrubberSetupService` | Apply profile configuration and save its audit records. Sync does not start a scan. |
+| Apply channel policy | `GroupSyncService`, `ChannelWriter`, `ChannelQuarantineService` | Ensure destination groups exist, update metadata, then quarantine unconfirmed channels. |
+| Recover matches | `MatchedChannelRecoveryService`, `MatchedChannelMerge` | Restore merge eligibility, select primaries and rebuild native failovers for confirmed matches; then disable eligible provider groups. |
 | Report | `WritePlanBuilder::summary`, `RunResultRepository` | Persist decisions and plans, and return counts, errors and cancellation status. |
 
 Preview follows preparation and planning, previews native settings and saves
 results. It may populate a missing scraper cache, but does not apply native
-settings, channel metadata, group or quarantine changes. Ordinary sync reuses a
+settings, channel metadata, group, quarantine or recovery changes. Ordinary sync reuses a
 valid last-good cache even when it is old; freshness-based fetching belongs to
 the refresh/setup actions. A corrupt or undersized existing cache fails sync.
 
@@ -54,7 +55,8 @@ Keep these ordering constraints visible when editing the action:
 - Creating a destination group requires rebuilding the channel write plan with
   its real ID. Preview can legitimately contain a `missing_group` instead.
 - Group setup failure stops channel writes. Failed or cancelled metadata writes
-  block quarantine; failed or cancelled quarantine blocks provider-group cleanup.
+  block quarantine; failed or cancelled quarantine blocks recovery. Recovery
+  must succeed before provider-group cleanup.
 - Provider-group cleanup rechecks current membership in the update query, so a
   newly imported or unquarantined channel prevents its group being disabled.
 
@@ -63,6 +65,12 @@ ordered stages are policy: fingerprint evidence, exact/explicit aliases and
 structured name rules precede fuzzy scoring. Guide-only fallback can use exact
 or structured matches, but never fuzzy scoring. `MatchDecision` defines which
 decisions are confirmed and which exclusions preserve a channel.
+
+A conflicting custom fingerprint can be replaced when all provider and display
+names identify one current service through exact names or selected aliases.
+Original provider fingerprints, ambiguous names and timeshift conflicts still
+require review. Verified rebrands belong in alias data, not matcher conditions;
+an old channel number alone cannot establish continuity after a lineup change.
 
 ## Transactions And Partial Results
 
@@ -74,7 +82,8 @@ whole playlist or batch.
 | Native settings and their audit rows | One transaction in `SyncPlaylistAction`; playlist settings are saved together | Successful configuration remains if channel processing later fails. |
 | Managed group creation/restoration/update | One transaction per group in `GroupSyncService::applyRow` | Earlier group changes remain; a failed group stops subsequent channel writes. |
 | Channel metadata | One transaction per channel in `ChannelWriter` | Earlier successful rows remain; failed rows are counted and reported. |
-| Quarantine | One transaction per channel, including the ownership record | Recorded merge policy and channel flags commit or roll back together. Release restores merge eligibility without enabling the channel. |
+| Quarantine | One transaction per channel, including the ownership record and backup-link cleanup | Recorded merge policy, channel flags and removal of incoming/outgoing failover links commit or roll back together. Release restores merge eligibility without enabling the channel. |
+| Matched-channel recovery | One transaction for the selected playlist's confirmed matches and their native merge | Merge eligibility, primary flags and failover relationships roll back together on failure or cancellation. Earlier metadata/quarantine changes remain. |
 | Provider-group disablement | One transaction per batch of up to 250 groups | Completed batches remain; changed or ineligible groups are reported as failures. |
 | Run results | One transaction per `RunResultRepository::replace` call, inserting buffers of 250 rows | A replacement rolls back as a unit. When called inside native-settings application, it also depends on the outer transaction. |
 
@@ -83,6 +92,29 @@ values. Writers reload and lock current models before comparing these snapshots.
 Do not replace this with a timestamp check or save the partially selected models
 used for preparation. `ChannelAttributes::readColumns` must retain every field
 needed by planning and the concurrent-edit checks.
+
+The provider's `source_id` is separate from the nullable internal `uuid` and the
+guide's `stream_id_custom`. Keep null UUIDs as null in plans: SQL must use
+`IS NULL`, not compare them with an empty string. Writes still require the local
+channel ID, playlist and unchanged provider identity; do not generate substitute
+provider IDs or copy them into UUIDs.
+
+`MatchedChannelMerge` adapts the host `MergeChannels` job's eligibility rules;
+native code still owns ranking and failover persistence. Only confirmed target
+channels and their configured backup playlists participate. Disabled confirmed
+channels can become primaries even without previous failover links; known-dead
+channels cannot. Preserved/unconfirmed target channels are excluded. Singleton
+matches recover too. Recovery reads saved probe statistics rather than invoking
+network probes while holding locks. Review this adapter when host protected
+merge methods change. The separate native rebuild action keeps normal host
+behaviour.
+
+Recovery locks projected identity fields first. For configured backup playlists,
+it streams just channel IDs and guide IDs through the native merge-key method,
+then loads ranking fields only for relevant streams. Keep that native key method
+as the normalization authority; SQL approximations can disagree on whitespace,
+case or empty custom IDs. Quarantine checks existing ownership records for
+leftover failover links in one query, so upgrades clean earlier quarantines too.
 
 Cancellation stops subsequent work; it does not undo committed stages. Results
 are saved at explicit checkpoints, including the group-setup failure path. An
@@ -309,6 +341,13 @@ cd ../podman
   m3u-editor-plugin-test \
   /var/www/html/plugins/guidelink/tests
 ```
+
+Release 0.1.4 validation on 2026-10-26 used PHP 8.4 and host `7943b2171`
+(0.13.6 with the plugin UI patch): 256 tests / 1,710 assertions passed on SQLite
+and 256 tests / 1,708 assertions passed on PostgreSQL 16. All 115 PHP files passed
+syntax and formatting checks; the standalone validator and nine release-tool
+tests passed. New regressions cover nullable UUIDs, stale provider identities,
+matched recovery, quarantine link removal/rollback and narrow recovery reads.
 
 Release 0.1.3 validation on 2026-10-22 used PHP 8.4 and isolated databases:
 

@@ -12,7 +12,7 @@ use App\Models\Playlist;
  * Optional raw fields may be absent on partially selected models.
  *
  * @phpstan-type DecisionState array{
- *     user_id?: int|string, name?: string|null, title?: string|null,
+ *     user_id?: int|string, source_id?: string|null, name?: string|null, title?: string|null,
  *     name_custom?: string|null, title_custom?: string|null,
  *     stream_id?: string|null, stream_id_custom?: string|null,
  *     channel?: int|float|string|null, group_id?: int|string|null,
@@ -25,7 +25,7 @@ use App\Models\Playlist;
  *     epg_channel_id?: int|string|null, logo_type?: string|null
  * }
  * @phpstan-type ChannelReportRow array{
- *     playlist_id: int, playlist_uuid: string, channel_id: int, channel_uuid: string,
+ *     playlist_id: int, playlist_uuid: string, channel_id: int, channel_uuid: string|null,
  *     enabled: bool, channel_number: int|float|string, title: string,
  *     name: string, group: string, stream_id: string
  * }
@@ -35,7 +35,7 @@ class ChannelAttributes
     public const NAME_FIELDS = ['title', 'title_custom', 'name', 'name_custom'];
 
     private const DECISION_FIELDS = [
-        'user_id', 'name', 'title', 'name_custom', 'title_custom', 'stream_id',
+        'user_id', 'source_id', 'name', 'title', 'name_custom', 'title_custom', 'stream_id',
         'stream_id_custom', 'channel', 'group_id', 'group_internal', 'is_vod',
     ];
 
@@ -93,6 +93,32 @@ class ChannelAttributes
         return $left === $right;
     }
 
+    /**
+     * Check a decision after this sync's metadata writes, while the caller holds
+     * the channel lock. A write may legitimately move it to a newly created group.
+     *
+     * @param  DecisionState  $snapshot
+     * @param  array<string, mixed>  $write
+     */
+    public static function assertDecisionUnchanged(Channel $channel, array $snapshot, array $write = []): void
+    {
+        $current = self::decisionState($channel);
+        $changes = $write['native_changes'] ?? [];
+        foreach ($snapshot as $field => $before) {
+            if ($field === 'group_name' && array_key_exists('group_id', $changes)) {
+                if (GroupIdentity::key($current['group_name']) !== GroupIdentity::key($write['desired']['group'])) {
+                    throw new \RuntimeException("Channel [{$channel->id}] target group changed after its metadata write; rerun sync.");
+                }
+
+                continue;
+            }
+            $expected = array_key_exists($field, $changes) ? $changes[$field] : $before;
+            if (! self::sameValue($field, $current[$field] ?? null, $expected)) {
+                throw new \RuntimeException("Channel [{$channel->id}] identity or scope changed after planning; rerun sync.");
+            }
+        }
+    }
+
     public static function title(Channel $channel): string
     {
         return (string) ($channel->title_custom
@@ -129,7 +155,9 @@ class ChannelAttributes
             'playlist_id' => (int) $playlist->id,
             'playlist_uuid' => (string) $playlist->uuid,
             'channel_id' => (int) $channel->id,
-            'channel_uuid' => (string) ($channel->uuid ?? ''),
+            // Provider imports may leave the internal UUID null. Preserve it for
+            // write guards; source_id is the separate provider stream identity.
+            'channel_uuid' => $channel->uuid,
             'enabled' => (bool) $channel->enabled,
             'channel_number' => $channel->channel ?? '',
             'title' => self::title($channel),

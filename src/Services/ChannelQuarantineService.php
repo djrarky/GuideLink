@@ -6,11 +6,11 @@ use App\Models\Channel;
 use App\Models\Playlist;
 use App\Plugins\Support\PluginExecutionContext;
 use AppLocalPlugins\GuideLink\Support\ChannelAttributes;
-use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use AppLocalPlugins\GuideLink\Support\MatchDecision;
 use AppLocalPlugins\GuideLink\Support\RunCancelled;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -41,6 +41,12 @@ class ChannelQuarantineService
             ->where('playlist_id', $playlist->id)
             ->get()->keyBy('channel_id');
         $channels = $channels->keyBy('id');
+        $linked = [];
+        if ($enabled && $states->isNotEmpty()) {
+            foreach ($this->failoverLinks($playlist, $states->keys()->all())->get(['channel_id', 'channel_failover_id']) as $link) {
+                $linked[$link->channel_id] = $linked[$link->channel_failover_id] = true;
+            }
+        }
         $rows = [];
 
         foreach ($decisions as $decision) {
@@ -52,13 +58,13 @@ class ChannelQuarantineService
             $state = $states->get($channel->id);
             $quarantine = $enabled && MatchDecision::shouldQuarantine($decision);
             $release = $state && (! $enabled || MatchDecision::isConfirmed($decision['decision']));
-            if ((! $quarantine || ($state && ! $channel->enabled && ! $channel->can_merge)) && ! $release) {
+            if ((! $quarantine || ($state && ! $channel->enabled && ! $channel->can_merge && ! isset($linked[$channel->id]))) && ! $release) {
                 continue;
             }
 
             $rows[] = [
                 'channel_id' => (int) $channel->id,
-                'channel_uuid' => (string) $channel->uuid,
+                'channel_uuid' => $channel->uuid,
                 'state_id' => $state?->id,
                 'decision_state' => ChannelAttributes::decisionState($channel),
                 'action' => $quarantine ? 'quarantine' : 'release',
@@ -109,7 +115,7 @@ class ChannelQuarantineService
     public function apply(Playlist $playlist, array $plan, PluginExecutionContext $context, array $writePlan = []): array
     {
         $writes = array_column($writePlan, null, 'channel_id');
-        $result = ['disabled' => 0, 'quarantined' => 0, 'released' => 0, 'skipped' => 0, 'failed' => 0, 'aborted' => false, 'errors' => []];
+        $result = ['disabled' => 0, 'quarantined' => 0, 'released' => 0, 'failover_links_removed' => 0, 'skipped' => 0, 'failed' => 0, 'aborted' => false, 'errors' => []];
         foreach ($plan as $index => $row) {
             if ($context->cancellationRequested()) {
                 $result['aborted'] = true;
@@ -134,32 +140,24 @@ class ChannelQuarantineService
                         ->where('channel_id', $channel->id);
                     $state = (clone $stateQuery)->lockForUpdate()->first();
                     $disabled = false;
+                    $linksRemoved = 0;
 
-                    if (($row['action'] === 'release' && ! $state)
-                        || ($row['action'] === 'quarantine' && $state && ! $channel->enabled && ! $channel->can_merge)) {
-                        return ['disabled' => false, 'skipped' => true];
+                    if ($row['action'] === 'release' && ! $state) {
+                        return ['disabled' => false, 'skipped' => true, 'links_removed' => 0];
                     }
                     if ($row['state_id'] !== null && $row['state_id'] !== $state?->id) {
                         throw new \RuntimeException("Channel [{$channel->id}] quarantine changed after planning; rerun sync.");
                     }
-                    $currentState = ChannelAttributes::decisionState($channel);
-                    $write = $writes[$channel->id] ?? [];
-                    $changes = $write['native_changes'] ?? [];
-                    foreach ($row['decision_state'] as $field => $before) {
-                        if ($field === 'group_name' && array_key_exists('group_id', $changes)) {
-                            if (GroupIdentity::key($currentState['group_name']) !== GroupIdentity::key($write['desired']['group'])) {
-                                throw new \RuntimeException("Channel [{$channel->id}] target group changed after its metadata write; rerun sync before changing quarantine.");
-                            }
-
-                            continue;
-                        }
-                        $expected = $changes[$field] ?? $before;
-                        if (! ChannelAttributes::sameValue($field, $currentState[$field] ?? null, $expected)) {
-                            throw new \RuntimeException("Channel [{$channel->id}] identity or scope changed after planning; rerun sync before changing quarantine.");
-                        }
-                    }
+                    ChannelAttributes::assertDecisionUnchanged($channel, $row['decision_state'], $writes[$channel->id] ?? []);
 
                     if ($row['action'] === 'quarantine') {
+                        // Disabled backups remain playable through existing links.
+                        // Remove only this quarantined channel's relationships;
+                        // a later confirmed match rebuilds valid native failovers.
+                        $linksRemoved = $this->failoverLinks($playlist, [(int) $channel->id])->delete();
+                        if ($state && ! $channel->enabled && ! $channel->can_merge && $linksRemoved === 0) {
+                            return ['disabled' => false, 'skipped' => true, 'links_removed' => 0];
+                        }
                         if (! $state) {
                             DB::table(self::TABLE)->insert([
                                 'extension_plugin_id' => $context->plugin->id,
@@ -181,9 +179,10 @@ class ChannelQuarantineService
                         $channel->save();
                     }
 
-                    return ['disabled' => $disabled, 'skipped' => false];
+                    return ['disabled' => $disabled, 'skipped' => false, 'links_removed' => $linksRemoved];
                 });
                 $result['disabled'] += (int) $outcome['disabled'];
+                $result['failover_links_removed'] += $outcome['links_removed'];
                 $result[$outcome['skipped'] ? 'skipped' : ($row['action'] === 'quarantine' ? 'quarantined' : 'released')]++;
             } catch (RunCancelled) {
                 $result['aborted'] = true;
@@ -195,5 +194,13 @@ class ChannelQuarantineService
         }
 
         return $result;
+    }
+
+    /** @param array<int, int> $channelIds */
+    private function failoverLinks(Playlist $playlist, array $channelIds): Builder
+    {
+        return DB::table('channel_failovers')->where('user_id', $playlist->user_id)
+            ->where(fn (Builder $query) => $query->whereIntegerInRaw('channel_id', $channelIds)
+                ->orWhereIntegerInRaw('channel_failover_id', $channelIds));
     }
 }

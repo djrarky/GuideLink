@@ -111,6 +111,7 @@ class AvailabilityRepairSafetyTest extends PluginFeatureTestCase
         [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
         $this->assignProfile($context, $playlist, ['repair_mode' => 'reenable_master']);
         $attributes = [
+            'uuid' => null,
             'playlist_id' => $playlist->id, 'user_id' => $context->user->id,
             'is_vod' => false, 'group_internal' => 'Entertainment', 'channel' => 101,
             'name' => 'BBC One', 'title' => 'BBC One',

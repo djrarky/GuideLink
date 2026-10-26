@@ -38,6 +38,42 @@ class ChannelWriteSafetyTest extends PluginFeatureTestCase
         return [['00101', '101'], ['9007199254740992', '9007199254740993'], ['1e2', '100']];
     }
 
+    public function test_imported_channels_without_internal_uuids_keep_their_provider_identity(): void
+    {
+        [$context, , $channel, $plan] = $this->fixture(uuid: null);
+        $sourceId = $channel->source_id;
+        $this->assertNull($plan[0]['channel_uuid']);
+
+        $result = (new ChannelWriter)->apply($plan, $context);
+
+        $this->assertSame(1, $result['channels_written']);
+        $this->assertNull($channel->refresh()->uuid);
+        $this->assertSame($sourceId, $channel->source_id);
+        $this->assertSame('bbc.one', $channel->stream_id_custom);
+    }
+
+    #[DataProvider('identityChanges')]
+    public function test_identity_guards_still_apply_without_a_uuid(string $field, mixed $value): void
+    {
+        [$context, , $channel, $plan] = $this->fixture(uuid: null);
+        $channel->forceFill([$field => $value])->saveQuietly();
+        $before = $channel->refresh()->getAttributes();
+
+        $result = (new ChannelWriter)->apply($plan, $context);
+
+        $this->assertSame(1, $result['channels_failed']);
+        $this->assertSame($before, $channel->refresh()->getAttributes());
+    }
+
+    public static function identityChanges(): array
+    {
+        return [
+            'provider stream changed' => ['source_id', 'replacement-stream'],
+            'UUID assigned' => ['uuid', 'd284b686-35ca-49bd-8be2-1450d348c462'],
+            'empty is distinct from null' => ['uuid', ''],
+        ];
+    }
+
     public function test_reapplying_an_already_satisfied_plan_does_not_save_or_count_a_write(): void
     {
         [$context, , $channel, $plan] = $this->fixture();
@@ -140,11 +176,12 @@ class ChannelWriteSafetyTest extends PluginFeatureTestCase
         $this->assertSame($before, $channel->refresh()->getAttributes());
     }
 
-    private function fixture(string $currentId = 'provider.one', string $desiredId = 'bbc.one'): array
+    private function fixture(string $currentId = 'provider.one', string $desiredId = 'bbc.one', ?string $uuid = 'b9e28ced-763b-4093-9806-0713451253aa'): array
     {
         Bus::fake();
         [$context, $playlist] = $this->context(dryRun: false);
         $channel = Channel::factory()->createQuietly([
+            'uuid' => $uuid, 'source_id' => 'provider-stream-1',
             'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id, 'group_id' => null,
             'is_vod' => false, 'enabled' => true, 'title' => 'UK: BBC One HD', 'name' => 'UK: BBC One HD',
             'title_custom' => null, 'name_custom' => null, 'stream_id_custom' => null,

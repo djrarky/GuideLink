@@ -239,6 +239,86 @@ class MatchingSafetyTest extends PluginFeatureTestCase
         $this->assertNull($fallback['source']);
     }
 
+    public function test_exact_names_can_repair_a_stale_custom_mapping_after_a_slot_change(): void
+    {
+        $countries = new CountryRulesRepository;
+        $rules = $countries->resolve([], []);
+        $matcher = new ChannelMatcher($countries);
+        $entries = [
+            ['number' => 101, 'name' => 'Harbour Movies', 'category' => 'Test', 'aliases' => [], 'stream_id' => '101.test', 'guide_valid' => true],
+            ['number' => 102, 'name' => 'Harbour Action', 'category' => 'Test', 'aliases' => [], 'stream_id' => '102.test', 'guide_valid' => true],
+            ['number' => 104, 'name' => 'Harbour News', 'category' => 'Test', 'aliases' => [], 'stream_id' => '104.test', 'guide_valid' => true],
+        ];
+        $attributes = [
+            'title' => 'UK: Harbour Action HD', 'name' => 'UK: Harbour Action HD',
+            'title_custom' => 'Harbour Action', 'name_custom' => 'Harbour Action',
+            'channel' => 101, 'stream_id' => 'HarbourAction.test', 'stream_id_custom' => '101.test',
+        ];
+        $thresholds = $matcher->thresholds([], []);
+        $index = $matcher->sourceIndex($entries, $rules, $thresholds);
+        $result = $matcher->match((new Channel)->forceFill($attributes), $index, $thresholds);
+        $this->assertSame('auto_apply', $result['decision']);
+        $this->assertSame('102.test', $result['source']['stream_id']);
+        $this->assertStringStartsWith('remapped_name:', $result['matched_on']);
+
+        // Conflicting original IDs, names, timeshifts or fuzzy guesses still need review.
+        foreach ([
+            ['stream_id' => '101.test'],
+            ['stream_id' => '104.test'],
+            ['stream_id_custom' => null, 'stream_id' => '101.test'],
+            ['title' => 'Harbour Movies', 'name' => 'Harbour Movies'],
+            ['title' => 'Harbour Action +1', 'name' => 'Harbour Action +1'],
+            ['title' => 'Harbour Acton', 'name' => 'Harbour Acton'],
+            ['title' => null, 'name' => null],
+        ] as $changes) {
+            $result = $matcher->match((new Channel)->forceFill([...$attributes, ...$changes]), $index, $thresholds);
+            $this->assertSame('needs_review', $result['decision'], json_encode($changes));
+        }
+
+        $entries[1]['guide_valid'] = false;
+        $result = $matcher->match((new Channel)->forceFill($attributes), $matcher->sourceIndex($entries, $rules), $thresholds);
+        $this->assertSame('needs_review', $result['decision']);
+        $this->assertSame('Source channel number is absent from the selected guide.', $result['review_reason']);
+
+        $entries[] = [...$entries[1], 'number' => 103, 'stream_id' => '103.test', 'guide_valid' => true];
+        $result = $matcher->match((new Channel)->forceFill($attributes), $matcher->sourceIndex($entries, $rules), $thresholds);
+        $this->assertSame('needs_review', $result['decision']);
+    }
+
+    public function test_an_unrecognized_name_cannot_reuse_a_fingerprint_for_an_unrelated_service(): void
+    {
+        foreach (['Discovery Movies', 'Unrelated Station'] as $title) {
+            $result = $this->match(['title' => $title, 'channel' => 125, 'stream_id_custom' => 'discovery.uk']);
+            $this->assertSame('needs_review', $result['decision'], $title);
+            $this->assertStringContainsString('Fingerprint conflicts with the channel name', $result['review_reason']);
+        }
+    }
+
+    public function test_verified_rebrand_aliases_can_repair_stored_mappings_without_weakening_timeshifts(): void
+    {
+        $countries = new CountryRulesRepository;
+        $rules = $countries->resolve([], []);
+        $matcher = new ChannelMatcher($countries);
+        $thresholds = $matcher->thresholds([], []);
+        $entries = [
+            ['number' => 101, 'name' => 'Harbour Drama', 'category' => 'Test', 'aliases' => [], 'stream_id' => '101.test', 'guide_valid' => true,
+                'profile_aliases' => ['HARBOUR SELECT' => [7 => 'Verified names'], 'HARBOUR SELECT +1' => [7 => 'Verified names']]],
+            ['number' => 102, 'name' => 'Harbour Action', 'category' => 'Test', 'aliases' => [], 'stream_id' => '102.test', 'guide_valid' => true],
+        ];
+        foreach (['Harbour Select' => 'auto_apply', 'Harbour Select +1' => 'needs_review'] as $name => $decision) {
+            $channel = (new Channel)->forceFill([
+                'title' => 'UK: '.$name.' HD', 'name' => 'UK: '.$name.' HD', 'title_custom' => $name, 'name_custom' => $name,
+                'channel' => 102, 'stream_id' => '', 'stream_id_custom' => '102.test',
+            ]);
+            $result = $matcher->match($channel, $matcher->sourceIndex($entries, $rules), $thresholds);
+            $this->assertSame($decision, $result['decision'], $name);
+            if ($decision === 'auto_apply') {
+                $this->assertSame('101.test', $result['source']['stream_id']);
+                $this->assertSame([7 => 'Verified names'], $result['alias_sets']);
+            }
+        }
+    }
+
     private function match(array $attributes, array $aliases = []): array
     {
         $countries = new CountryRulesRepository;

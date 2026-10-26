@@ -40,7 +40,7 @@ class BundledAliasesTest extends PluginFeatureTestCase
         $sets = DB::table(ProfileAliasResolver::SETS)->get()->toArray();
         $result = $this->runGuideLinkAction('preview_alias_set', ['alias_set_id' => $set], $context);
         $this->assertTrue($result->success, $result->summary);
-        $this->assertSame(['guide_entries' => 30, 'alternative_names' => 44], $result->data['totals']);
+        $this->assertSame(['guide_entries' => 31, 'alternative_names' => 45], $result->data['totals']);
         $this->assertSame('Read-only bundled defaults', $result->data['source']);
         $this->assertSame('sky-uk', $result->data['bundle_id']);
         $this->assertSame(['Utsav Plus'], array_column($result->data['entries'], 'alternative_names', 'guide_id')['705.uk']);
@@ -88,6 +88,49 @@ class BundledAliasesTest extends PluginFeatureTestCase
             rmdir($directory);
         }
         $this->assertSame([], (new Plugin)->scheduledActions(CarbonImmutable::now(), []));
+    }
+
+    public function test_verified_rebrands_and_slot_moves_sync_once_without_enabling_disabled_copies(): void
+    {
+        [$context, $playlist] = $this->prepare(false);
+        $settings = json_decode(DB::table(ProfileRepository::PROFILES_TABLE)->first()->settings, true);
+        EpgChannel::factory()->createQuietly([
+            'epg_id' => $settings['guide_epg_id'], 'user_id' => $context->user->id,
+            'channel_id' => '153.uk', 'display_name' => '153', 'name' => '5Action',
+        ]);
+        Channel::factory()->createQuietly([
+            'playlist_id' => $settings['source_playlist_id'], 'user_id' => $context->user->id,
+            'group_id' => null, 'channel' => 153, 'title' => '5Action', 'name' => '5Action',
+            'enabled' => true, 'is_vod' => false,
+        ]);
+        $channels = [];
+        foreach ([
+            ['5Select', 153, '5Drama', 150, true],
+            ['5Action', 150, '5Action', 153, true],
+            ['5Action', 150, '5Action', 153, false],
+            ['Now 90s', 999, 'Now 90s & 00s', 357, true],
+        ] as [$oldName, $oldNumber, $name, $number, $enabled]) {
+            $channel = Channel::factory()->createQuietly([
+                'playlist_id' => $playlist->id, 'user_id' => $context->user->id, 'group_id' => null,
+                'title' => 'UK: '.$oldName.' HD', 'name' => 'UK: '.$oldName.' HD',
+                'title_custom' => $oldName, 'name_custom' => $oldName, 'channel' => $oldNumber,
+                'stream_id' => '', 'stream_id_custom' => $oldNumber.'.uk', 'enabled' => $enabled, 'is_vod' => false,
+            ]);
+            $channels[] = [$channel, $name, $number, $enabled];
+        }
+
+        $payload = ['playlist_id' => $playlist->id];
+        $result = $this->runGuideLinkAction('apply_sync_playlist', $payload, $context);
+        $this->assertTrue($result->success, $result->summary);
+        foreach ($channels as [$channel, $name, $number, $enabled]) {
+            $channel->refresh();
+            $this->assertSame($name, $channel->title_custom);
+            $this->assertSame($number.'.uk', $channel->stream_id_custom);
+            $this->assertSame($enabled, $channel->enabled);
+        }
+        $again = $this->runGuideLinkAction('apply_sync_playlist', $payload, $context);
+        $this->assertTrue($again->success, $again->summary);
+        $this->assertSame(0, $again->data['writes']['channels_written']);
     }
 
     public function test_wrong_channel_identity_aborts_before_channel_or_alias_writes(): void

@@ -1,7 +1,7 @@
 {
     "id": "sky-uk",
     "name": "Sky UK channel aliases",
-    "revision": 1,
+    "revision": 2,
     "country": "uk",
     "entries": [
         {
@@ -169,6 +169,13 @@
             "target_name": "Nickelodeon +1",
             "aliases": [
                 "Nick +1"
+            ]
+        },
+        {
+            "target_stream_id": "150.uk",
+            "target_name": "5Drama",
+            "aliases": [
+                "5Select"
             ]
         },
         {

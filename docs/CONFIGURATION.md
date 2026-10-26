@@ -27,11 +27,13 @@ selected user-managed scrubber is inspected without changing it.
 
 Sync can target one playlist or all enabled assignments selected for sync. Native
 settings are written to each target playlist and its managed scrubber; the native
-merge process can subsequently involve the configured backup playlists.
+merge process can involve the configured backup playlists.
 
-Run Sync does not start a scan or failover rebuild. m3u-editor's native playlist
-sync and recurring scrubber lifecycle handle that processing. Scans can also be
-started separately in m3u-editor.
+After successful metadata writes and quarantine, Run Sync restores confirmed
+matches to primary/backup selection, including previously disabled channels.
+It uses m3u-editor's ranking and failover records with stored probe results.
+It does not start a scan. Native playlist sync and recurring scrubbers continue
+to perform stream checks; scans can also be started separately in m3u-editor.
 
 The visible actions are **Check Channels**, **Preview Sync**, **Run Sync**, and
 **Preview Alias Set**.
@@ -407,8 +409,11 @@ review-only suggestions and sources with no match.
 New defaults do not overwrite explicitly saved profile choices. Change a profile
 in **Data → Profiles**, then use Preview Sync / Run Sync to apply its settings.
 
-Sync inspects enabled and disabled live channels. It keeps accepted matches,
-including hidden backups, aligned without changing their enabled state. Managed
+Sync inspects enabled and disabled live channels. It updates accepted matches
+and restores their merge eligibility, then selects usable primaries and hides
+backups when **Hide backup entries** is on. This also recovers standalone matches
+and channels manually disabled or marked non-mergeable. Known-dead streams stay
+off until a later check succeeds; unchecked streams can participate. Managed
 groups are custom live groups so native playlist import cleanup retains them.
 Group identity ignores case and whitespace only: provider prefixes and quality
 labels are not stripped. Imported provider groups are not adopted as managed
@@ -439,8 +444,9 @@ planned enabled/merge-eligibility change and provider-group disable. Matches
 needing review keep their review results while being disabled. Provider groups
 containing preserved channels or confirmed matches that stay in that group are
 left enabled; custom, merged and VOD groups are untouched. Group cleanup runs
-only after channel writes and quarantine succeed. Switching the option off does
-not automatically re-enable channels or provider groups.
+only after channel writes, quarantine and matched-channel recovery succeed.
+Switching the option off does not automatically re-enable unconfirmed channels
+or provider groups. Confirmed matches are recovered independently of this option.
 
 New channels imported with the native default enabled are evaluated on the next
 GuideLink sync, including channels in disabled provider groups. The
@@ -449,12 +455,17 @@ cleanup by itself. Channels may remain enabled until Run Sync or a scheduled syn
 Preview Sync reports the proposed cleanup without disabling channels.
 
 The internal
-`plugin_guidelink_quarantines` table records prior merge preferences. A later
-accepted match, or switching quarantine off and running sync, restores that
-preference without directly enabling the channel. Channels covered by preserve
+`plugin_guidelink_quarantines` table records prior merge preferences. Switching
+quarantine off restores the prior preference for still-unconfirmed channels
+without enabling them. A later accepted match clears quarantine and participates
+in primary/backup selection regardless of its previous manual flags. Channels covered by preserve
 rules remain untouched, including any earlier quarantine flags.
 Availability repair reports quarantined channels as **keep_disabled** and does
 not re-enable them, even when an existing failover is enabled.
+Quarantine also removes incoming and outgoing backup links for that channel,
+so playback cannot reach it through an old primary. Previously quarantined
+channels with leftover links are cleaned on the next applying sync. Valid hidden
+backups are kept; a later confirmed match can rebuild its backup relationships.
 Before each repair write, GuideLink locks the primary and rechecks quarantine,
 playlist ownership and enabled failover coverage. Changed candidates are skipped
 with a reason in the results. Cancellation preserves completed repairs and their
@@ -478,16 +489,16 @@ the playlist; use Preview Sync, then Run Sync.
 | Manage playlist layout & imports | `true` | On Run Sync or a scheduled sync that applies changes, manage playlist ordering, numbering and new live imports. Turn off automatic channel/group sorting and forced numbering; apply the choices below. Ordering and numbering affect the whole playlist, including VOD. Turning this off keeps the last applied settings. |
 | Playlist order | Group order, then channel order | Output a single list in channel-number order, or keep groups together with channels ordered inside each group. |
 | Automatic numbers for unnumbered channels | Off | Control automatic numbering for channels without a saved number. Existing guide numbers and the playlist's starting number are kept. Number-based TVG IDs may still require a number when this is off. |
-| Enable newly imported live channels | `true` | While Manage playlist layout & imports is on, enable live channels discovered in future provider imports. Existing disabled channels stay disabled. New channels can remain enabled until Run Sync or a scheduled sync applies the unmatched-channel policy. |
+| Enable newly imported live channels | `true` | While Manage playlist layout & imports is on, enable live channels discovered in future provider imports. This import setting does not change existing channels. Run Sync separately recovers confirmed matches and applies the unmatched-channel policy. |
 
 Installing GuideLink after creating or importing a playlist is supported.
 Installation creates plugin tables, and the Playlists screen prefills disabled,
 unassigned links to existing playlists. Neither step changes their settings or
 channels. Choose and enable a profile assignment, then apply a sync to use its
 defaults. The import hook reports availability; it does not apply these settings.
-Channels imported while the native Enable New Live Channels setting was off
-remain disabled even if GuideLink subsequently matches them. Enabling future
-imports does not retroactively enable those channels.
+Channels imported while the native Enable New Live Channels setting was off are
+still evaluated by GuideLink. A successful sync can recover confirmed matches as
+primaries or hidden backups. Enabling future imports alone does not change them.
 
 The ordering and numbering settings affect the **whole assigned playlist**,
 including VOD and channels outside GuideLink's matching scope. The new-channel
@@ -531,13 +542,13 @@ these native tables and columns when troubleshooting host compatibility.
 | --- | --- | --- |
 | Preferred stream playlist | assigned playlist | Prefer primary streams from this playlist. Leave blank to use each assigned playlist. Catch-up and resolution preferences can take priority. |
 | Backup playlists | empty | Choose additional playlists in priority order for backup streams. Leave empty to use channels from the assigned playlist only. |
-| Hide backup entries | `true` | Keep backup streams available for failover while disabling their separate playlist entries. Apply this when m3u-editor next processes backups. |
+| Hide backup entries | `true` | Keep backup streams available for failover while disabling their separate playlist entries. Applies during GuideLink sync recovery and native backup processing. |
 | Only process newly imported channels | `false` | Limit backup processing to channels marked as new by m3u-editor. Leave off to include existing eligible channels too. |
 | Reconsider existing backup assignments | `true` | Allow existing backup streams to be reconsidered during the next merge. The new-channels-only restriction still applies when enabled. |
 | Match backup streams by | Stream ID | Choose the identifier m3u-editor uses to group matching streams. Stream ID is the normal choice for GuideLink live channels; TMDB ID requires matching TMDB metadata. |
-| Prefer higher resolution | `true` | Prefer higher-resolution streams when choosing the primary stream. m3u-editor uses saved stream statistics and may probe streams when needed. |
+| Prefer higher resolution | `true` | Prefer higher-resolution streams when choosing the primary stream. GuideLink sync uses saved statistics; separate native merge jobs may probe when needed. |
 | Prefer catch-up support | `true` | Prefer eligible streams with catch-up support before applying resolution and playlist preferences. |
-| Avoid primary streams that failed checks | `true` | Exclude streams recorded as failed by the stream checker when choosing a primary stream. This uses saved health results; it does not start a new check. |
+| Avoid primary streams that failed checks | `true` | Exclude failed streams during native primary selection. GuideLink sync recovery always keeps known-dead entries off. Uses saved health results; does not start a new check. |
 | Stream checker | empty | Leave blank for GuideLink to create or reuse its checker for each assigned playlist. A selected checker must belong to that playlist. GuideLink only changes checkers it manages; edit a user-managed checker in m3u-editor's Channel Scrubbers screen. |
 | Avoid primary streams from disabled groups | `true` | Exclude channels in disabled groups when choosing a primary stream. |
 | Check streams after playlist import | `true` | Run the managed stream checker after m3u-editor imports or refreshes the provider playlist. This is separate from a GuideLink metadata sync. |
@@ -683,8 +694,8 @@ records from changes to playlist data, native settings, and saved report rows.
 | Action | Writes data | Use |
 | --- | --- | --- |
 | Check Channels | Run results only | Reports disabled primaries, failover coverage, scrubber context, and source coverage using the playlist's assigned profile. |
-| Preview Sync | Cache and run results only | Previews native settings, matching, groups, logos, and quarantine changes using the current assigned profile. |
-| Run Sync | Native settings, metadata/groups, quarantine flags/state, cache and run results | Applies profile-managed playlist layout/import preferences, auto-merge/managed scrubber settings, metadata/group writes, and the quarantine policy using the current assigned profile. Requires confirmation; does not start a scan or rebuild. |
+| Preview Sync | Cache and run results only | Previews native settings, matching, groups, logos and quarantine, and counts confirmed recovery candidates. Final primary selection uses current health and native state after metadata is applied. |
+| Run Sync | Native settings, metadata/groups, quarantine, primary/backup state, cache and run results | Applies the profile, metadata and quarantine, then recovers confirmed matches using native primary selection and failover records. Requires confirmation; does not start a scan. |
 | Preview Alias Set | Run history only | Lists guide targets and alternative names for a saved bundled or custom set, including disabled entries. |
 
 Advanced actions are hidden from the primary menu but remain available by action
@@ -716,9 +727,11 @@ The GuideLink-managed scrubber defaults to:
 - protecting hidden failovers,
 - rebuilding native failovers after successful scans.
 
-Recovery remains topology-aware: native auto-merge can restore a previously
-hidden failover/master when scrubber state says it is live again, without
-broadly re-enabling manually disabled channels.
+Native auto-merge can restore an existing failover/master when its stream becomes
+live again. GuideLink's next successful sync also restores confirmed matches
+without existing failover relationships. Manual enabled/merge flags do not
+override the assigned profile's matching policy; use profile Exceptions to keep
+specific target channels unchanged.
 
 Each participating playlist needs its own recurring scrubber, including backup
 playlists. Native scrubbers scan their own playlist; listing another playlist as

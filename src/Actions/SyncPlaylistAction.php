@@ -122,6 +122,7 @@ class SyncPlaylistAction extends GuideLinkAction
             $context,
         );
         $quarantineResult = null;
+        $recoveryResult = null;
         $groupDisablePlan = $groupSync->planDisabling(
             $playlist, $channels, $decisions, $writePlan, $groupPlan, $payload,
         );
@@ -214,8 +215,8 @@ class SyncPlaylistAction extends GuideLinkAction
             ], log: true);
 
             $writeResult = $channelWriter->apply($writePlan, $context);
-            // Cleanup depends on complete metadata writes; group cleanup also
-            // requires successful quarantine. A failed stage blocks dependants.
+            // Apply policy only after complete metadata writes. Quarantine,
+            // matched recovery and group cleanup each depend on the prior stage.
             if (! $writeResult['aborted'] && $writeResult['channels_failed'] === 0
                 && ! $context->cancellationRequested()) {
                 $quarantineResult = $quarantine->apply($playlist, $quarantinePlan, $context, $writePlan);
@@ -224,6 +225,12 @@ class SyncPlaylistAction extends GuideLinkAction
                 $writeResult['errors'] = [...$writeResult['errors'], ...$quarantineResult['errors']];
                 $writeResult['aborted'] = $quarantineResult['aborted'];
                 if (! $quarantineResult['aborted'] && $quarantineResult['failed'] === 0) {
+                    $recoveryResult = $this->services->matchedChannelRecovery()->apply($playlist, $matchRows, $writePlan, $context);
+                    $writeResult['channels_failed'] += $recoveryResult['failed'];
+                    $writeResult['errors'] = [...$writeResult['errors'], ...$recoveryResult['errors']];
+                    $writeResult['aborted'] = $recoveryResult['aborted'];
+                }
+                if ($recoveryResult !== null && ! $recoveryResult['aborted'] && $recoveryResult['failed'] === 0) {
                     $groupDisableResult = $groupSync->applyDisabling($playlist, $groupDisablePlan, $context);
                     $groupResult['groups_failed'] += $groupDisableResult['failed'];
                     $groupResult['errors'] = [...$groupResult['errors'], ...$groupDisableResult['errors']];
@@ -261,12 +268,16 @@ class SyncPlaylistAction extends GuideLinkAction
         );
         $summary['writes']['groups_to_disable'] = count($groupDisablePlan);
         $summary['writes']['groups_disabled'] = $groupDisableResult['disabled'] ?? 0;
+        if ($context->dryRun) {
+            $recoveryResult = $this->services->matchedChannelRecovery()->apply($playlist, $matchRows, $writePlan, $context);
+        }
 
         $data = [
             ...$summary,
             'totals' => $this->totals($summary),
             'source_cache' => $sourceCache,
             'native_settings' => $nativeSettings,
+            'matched_recovery' => $recoveryResult,
             'quarantine' => [
                 'planned' => count($quarantinePlan),
                 'to_disable' => count(array_filter($quarantinePlan, fn (array $row): bool => $row['action'] === 'quarantine' && $row['current']['enabled'])),
@@ -282,7 +293,7 @@ class SyncPlaylistAction extends GuideLinkAction
             return PluginActionResult::cancelled('Sync cancelled; changes already applied have been retained.', $data);
         }
         if ($summary['writes']['channels_failed'] > 0 || $summary['writes']['groups_failed'] > 0) {
-            return PluginActionResult::failure('Sync had write failures; inspect the channel, quarantine and group results. Successful changes were retained.', $data);
+            return PluginActionResult::failure('Sync had write failures; inspect the channel, quarantine, recovery and group results. Successful changes were retained.', $data);
         }
 
         $context->checkpoint(100, $context->dryRun ? 'Sync playlist preview completed.' : 'Sync playlist apply completed.', [
@@ -294,7 +305,7 @@ class SyncPlaylistAction extends GuideLinkAction
         return PluginActionResult::success(
             $context->dryRun
                 ? 'Sync preview completed without changing native settings or channel metadata.'
-                : "Sync completed: {$summary['writes']['channels_written']} channel metadata update(s), {$summary['writes']['unmanaged_channels_disabled']} channel(s) and {$summary['writes']['groups_disabled']} provider group(s) disabled.",
+                : "Sync completed: {$summary['writes']['channels_written']} metadata update(s), {$summary['writes']['unmanaged_channels_disabled']} unconfirmed channel(s) disabled, {$recoveryResult['enabled']} primary stream(s) enabled, {$recoveryResult['disabled']} duplicate or unavailable entry/entries disabled, and {$summary['writes']['groups_disabled']} provider group(s) disabled.",
             [...$data, 'progress' => 100],
         );
     }

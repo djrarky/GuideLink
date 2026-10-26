@@ -27,7 +27,7 @@ use AppLocalPlugins\GuideLink\Support\MatchDecision;
  *     group_id: int|null, group: string, epg_channel_id: int|string|null, logo_type: string|null
  * }
  * @phpstan-type WritePlanRow array{
- *     playlist_id: int, channel_id: int, channel_uuid: string,
+ *     playlist_id: int, channel_id: int, channel_uuid: string|null,
  *     decision: string, tier: int|'', score: int,
  *     current: MetadataView, desired: MetadataView,
  *     native_columns: NativeMetadata, native_changes: NativeMetadata,
@@ -127,7 +127,7 @@ class WritePlanBuilder
             $rows[] = [
                 'playlist_id' => (int) $matchRow['playlist_id'],
                 'channel_id' => (int) $matchRow['channel_id'],
-                'channel_uuid' => (string) $matchRow['channel_uuid'],
+                'channel_uuid' => $matchRow['channel_uuid'],
                 'decision' => (string) $matchRow['decision'],
                 'tier' => $matchRow['tier'],
                 'score' => (int) $matchRow['score'],
