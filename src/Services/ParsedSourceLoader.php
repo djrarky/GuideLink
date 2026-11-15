@@ -12,7 +12,8 @@ use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 /**
  * Build matching input from a validated source and the current guide/profile.
  * entries() supplies stream_id and guide_valid; matching helpers also accept
- * the core source fields alone. Empty categories preserve existing groups.
+ * the core source fields alone. EPG-only services use the managed Other group;
+ * empty native-source categories preserve existing groups.
  * profile_aliases maps normalized names to alias-set IDs and display names.
  *
  * @phpstan-import-type SourceSnapshot from SourceCacheService
@@ -157,7 +158,7 @@ class ParsedSourceLoader
                 }
             }
             $entries[] = [
-                'number' => $number, 'name' => $names[0], 'category' => '',
+                'number' => $number, 'name' => $names[0], 'category' => 'Other',
                 'aliases' => $names, 'stream_id' => $guideMap[$number],
                 'guide_valid' => true, 'guide_only' => true,
             ];

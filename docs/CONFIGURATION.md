@@ -608,9 +608,12 @@ only when both remaining names and the provider’s channel ID agree.
 
 In scraper mode, numbered channels present only in the selected guide are
 available as a fallback for exact or structured name matches. Duplicate guide
-slots for existing services are skipped, fuzzy fallback is disabled, and these
-channels retain their current groups. Native playlist mode remains limited to
-its chosen source playlist.
+slots for existing services are skipped and fuzzy fallback is disabled. These
+channels use the managed **Other** group so a confirmed guide-only match does
+not keep an otherwise quarantined provider group enabled. The existing group
+management opt-out and preserve rules still apply. Native playlist mode remains
+limited to its chosen source playlist; empty native categories retain their
+current groups.
 
 Channel-specific aliases belong to selected sets and target guide IDs. Bundled
 entries live in the installed JSON; custom entries live in the database.
@@ -638,6 +641,13 @@ and the documented [GREAT! rebrands](https://www.avforums.com/news/great-launche
 and [True Movies / Romance history](https://en.wikipedia.org/wiki/Great%21_Romance).
 Cinema Select/Hits use the stable Pop-Up aliases in the current catalogue,
 corroborated by the [Sky guide-change discussion](https://helpforum.sky.com/t5/What-s-On/Changes-to-the-TV-Guide-May-2026/m-p/5262524).
+The November dataset also recognises the verified Animation/Christmas and
+Halloween/Bourne/Batman/Mad Max/The Mummy/Mission Impossible cinema names,
+Nick Alvinnn!!!/Nick SpongeBob, and New Vision TV/ARY World, based on Sky's
+[October](https://helpforum.sky.com/t5/What-s-On/Changes-to-the-TV-Guide-October-2026/td-p/5379297)
+and [November announcements](https://helpforum.sky.com/t5/What-s-On/Changes-to-the-TV-Guide-November-2026/m-p/5411427).
+These explicit aliases still validate the guide's named target; a channel number
+alone does not establish service continuity.
 There is no permanent Superheroes-to-Greats rewrite: seasonal labels have occupied
 different cinema services. A provider retaining such a label needs a matching
 source/guide alias or independent feed evidence. Bloomberg EU uses the generic

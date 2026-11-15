@@ -9,6 +9,7 @@ use App\Models\Epg;
 use App\Models\EpgChannel;
 use App\Models\Playlist;
 use App\Models\User;
+use App\Plugins\Support\PluginExecutionContext;
 use App\Plugins\Support\PluginSelectOptionsContext;
 use AppLocalPlugins\GuideLink\Plugin;
 use AppLocalPlugins\GuideLink\Services\BundledAliasService;
@@ -40,7 +41,7 @@ class BundledAliasesTest extends PluginFeatureTestCase
         $sets = DB::table(ProfileAliasResolver::SETS)->get()->toArray();
         $result = $this->runGuideLinkAction('preview_alias_set', ['alias_set_id' => $set], $context);
         $this->assertTrue($result->success, $result->summary);
-        $this->assertSame(['guide_entries' => 31, 'alternative_names' => 45], $result->data['totals']);
+        $this->assertSame(['guide_entries' => 33, 'alternative_names' => 57], $result->data['totals']);
         $this->assertSame('Read-only bundled defaults', $result->data['source']);
         $this->assertSame('sky-uk', $result->data['bundle_id']);
         $this->assertSame(['Utsav Plus'], array_column($result->data['entries'], 'alternative_names', 'guide_id')['705.uk']);
@@ -131,6 +132,54 @@ class BundledAliasesTest extends PluginFeatureTestCase
         $again = $this->runGuideLinkAction('apply_sync_playlist', $payload, $context);
         $this->assertTrue($again->success, $again->summary);
         $this->assertSame(0, $again->data['writes']['channels_written']);
+    }
+
+    public function test_verified_seasonal_names_and_rebrands_recover_saved_matches(): void
+    {
+        [$context, $playlist] = $this->prepare(false);
+        $settings = json_decode(DB::table(ProfileRepository::PROFILES_TABLE)->first()->settings, true);
+        $channels = [];
+        foreach ([
+            [302, 'Sky Cinema Animation', 'Sky Cinema Christmas', 'Sky Christmas HD'],
+            [303, 'Sky Cinema Bourne', 'Sky Cinema The Mummy', 'Sky M:I HD'],
+            [605, 'Nick Alvinnn!!!', 'Nick SpongeBob', 'Nick SpongeBob'],
+            [735, 'New Vision TV', 'ARY World', 'ARY World'],
+        ] as [$number, $oldName, $currentName, $guideName]) {
+            EpgChannel::where('channel_id', $number.'.uk')->update(['name' => $guideName]);
+            Channel::where('playlist_id', $settings['source_playlist_id'])->where('channel', $number)
+                ->update(['title' => $currentName, 'name' => $currentName]);
+            $channel = Channel::factory()->createQuietly([
+                'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id, 'group_id' => null,
+                'title' => 'UK: '.$oldName.' HD', 'name' => 'UK: '.$oldName.' HD',
+                'title_custom' => $oldName, 'name_custom' => $oldName, 'channel' => $number,
+                'stream_id' => '', 'stream_id_custom' => $number.'.uk', 'enabled' => true, 'is_vod' => false,
+            ]);
+            $channels[] = [$channel, $oldName, $currentName, $number];
+        }
+        $preview = new PluginExecutionContext(
+            $context->plugin, $context->run, 'test', true, null, $context->user, [],
+        );
+        $payload = ['playlist_id' => $playlist->id];
+        $result = $this->runGuideLinkAction('sync_playlist', $payload, $preview);
+        $this->assertTrue($result->success, $result->summary);
+        foreach ($channels as [$channel, $oldName]) {
+            $this->assertSame($oldName, $channel->refresh()->title_custom);
+        }
+
+        $result = $this->runGuideLinkAction('apply_sync_playlist', $payload, $context);
+        $this->assertTrue($result->success, $result->summary);
+        foreach ($channels as [$channel, , $currentName, $number]) {
+            $this->assertSame($currentName, $channel->refresh()->title_custom);
+            $this->assertSame($number.'.uk', $channel->stream_id_custom);
+        }
+        $again = $this->runGuideLinkAction('apply_sync_playlist', $payload, $context);
+        $this->assertTrue($again->success, $again->summary);
+        $this->assertSame(0, $again->data['writes']['channels_written']);
+
+        EpgChannel::where('channel_id', '303.uk')->update(['name' => 'Unrelated Movies']);
+        $result = $this->runGuideLinkAction('sync_playlist', $payload, $preview);
+        $this->assertFalse($result->success);
+        $this->assertStringContainsString('303.uk', $result->summary);
     }
 
     public function test_wrong_channel_identity_aborts_before_channel_or_alias_writes(): void

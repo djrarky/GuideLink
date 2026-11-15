@@ -1,7 +1,7 @@
 {
   "id": "guidelink",
   "name": "GuideLink",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "api_version": "1.0.0",
   "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
   "entrypoint": "Plugin.php",

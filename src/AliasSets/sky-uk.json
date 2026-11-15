@@ -1,7 +1,7 @@
 {
     "id": "sky-uk",
     "name": "Sky UK channel aliases",
-    "revision": 2,
+    "revision": 3,
     "country": "uk",
     "entries": [
         {
@@ -127,20 +127,35 @@
             "target_stream_id": "302.uk",
             "target_name": "Sky Cinema Animation",
             "aliases": [
-                "Sky Cinema Select"
+                "Sky Cinema Select",
+                "Sky Cinema Animation",
+                "Sky Cinema Christmas"
             ],
             "guide_names": [
-                "SkyAnimationHD"
+                "SkyAnimationHD",
+                "Sky Christmas HD"
             ]
         },
         {
             "target_stream_id": "303.uk",
             "target_name": "Sky Cinema Halloween",
             "aliases": [
-                "Sky Cinema Hits"
+                "Sky Cinema Hits",
+                "Sky Cinema Halloween",
+                "Sky Cinema Bourne",
+                "Sky Bourne",
+                "Sky Cinema Batman",
+                "Sky Cinema Mad Max",
+                "Sky Cinema The Mummy",
+                "Sky Cinema Mission Impossible"
             ],
             "guide_names": [
-                "Halloween HD"
+                "Halloween HD",
+                "Sky Bourne HD",
+                "Sky Batman HD",
+                "Sky Mad Max HD",
+                "TheMummyHD",
+                "Sky M:I HD"
             ]
         },
         {
@@ -251,6 +266,24 @@
             "target_name": "GREAT! tv +1",
             "aliases": [
                 "Sony Channel +1"
+            ]
+        },
+        {
+            "target_stream_id": "605.uk",
+            "target_name": "Nicktoons",
+            "aliases": [
+                "Nick Alvinnn!!!"
+            ],
+            "guide_names": [
+                "Nick SpongeBob"
+            ]
+        },
+        {
+            "target_stream_id": "735.uk",
+            "target_name": "ARY World",
+            "aliases": [
+                "New Vision TV",
+                "New Vision"
             ]
         }
     ]

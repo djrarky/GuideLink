@@ -30,6 +30,7 @@ use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 class SyncStabilityTest extends PluginFeatureTestCase
 {
@@ -471,7 +472,7 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $this->assertTrue((bool) $playlist->refresh()->enable_channels);
     }
 
-    public function test_guide_only_matches_without_a_category_survive_identical_runs(): void
+    public function test_guide_only_matches_move_to_other_and_allow_provider_group_cleanup(): void
     {
         [$context, $playlist] = $this->configured(['disable_other_groups' => true]);
         $profile = DB::table(ProfileRepository::PROFILES_TABLE)->first();
@@ -488,14 +489,63 @@ class SyncStabilityTest extends PluginFeatureTestCase
         ], ['channel_count' => 1]);
         $channel = $this->channel($playlist, ['name' => 'Specialty Channel', 'title' => 'Specialty Channel']);
         $originalGroupId = $channel->group_id;
+        $heading = Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $playlist->user_id,
+            'group_id' => $originalGroupId, 'title' => '#### PROVIDER ####', 'name' => '#### PROVIDER ####',
+            'title_custom' => null, 'name_custom' => null, 'enabled' => true, 'is_vod' => false,
+        ]);
+        $this->sync($this->previewContext($context), $playlist);
+        $this->assertSame($originalGroupId, $channel->refresh()->group_id);
+        $this->assertTrue((bool) Group::findOrFail($originalGroupId)->enabled);
+        $this->assertSame(0, Group::where('playlist_id', $playlist->id)->where('name', 'Other')->count());
+
+        $first = $this->sync($context, $playlist);
+        $this->assertSame('specialty', $channel->refresh()->stream_id_custom);
+        $other = Group::findOrFail($channel->group_id);
+        $this->assertSame('Other', $other->name);
+        $this->assertTrue((bool) $other->custom);
+        $this->assertTrue((bool) $other->enabled);
+        $this->assertFalse((bool) Group::findOrFail($originalGroupId)->enabled);
+        $this->assertFalse($heading->refresh()->enabled);
+        $this->assertSame(1, $first->data['writes']['groups_disabled']);
+        $again = $this->sync($context, $playlist);
+        $this->assertSame(0, $again->data['writes']['channels_written']);
+        $this->assertSame(0, $again->data['quarantine']['planned']);
+        $this->assertSame(0, $again->data['writes']['groups_created']);
+        $this->assertSame($other->id, $channel->refresh()->group_id);
+        $this->assertTrue($channel->refresh()->enabled);
+    }
+
+    public static function guideOnlyPreservationSettings(): array
+    {
+        return [
+            'group management disabled' => [['include_managed_groups' => false]],
+            'Other category preserved' => [['preserve_groups' => ['Other']]],
+        ];
+    }
+
+    #[DataProvider('guideOnlyPreservationSettings')]
+    public function test_guide_only_other_category_respects_group_preservation(array $settings): void
+    {
+        [$context, $playlist] = $this->configured(['disable_other_groups' => true, ...$settings]);
+        $profile = json_decode(DB::table(ProfileRepository::PROFILES_TABLE)->first()->settings, true);
+        EpgChannel::factory()->createQuietly([
+            'epg_id' => $profile['guide_epg_id'], 'user_id' => $playlist->user_id,
+            'channel_id' => 'specialty', 'name' => 'Specialty Channel', 'display_name' => '999',
+        ]);
+        $source = ['source_mode' => 'scraper_cache', 'min_channels' => 1];
+        $this->settings($source);
+        $cache = new SourceCacheService;
+        $cache->writeLastGood($cache->config($source, []), [
+            ['number' => 101, 'name' => 'BBC One', 'category' => 'Entertainment', 'aliases' => []],
+        ], ['channel_count' => 1]);
+        $channel = $this->channel($playlist, ['name' => 'Specialty Channel', 'title' => 'Specialty Channel']);
+        $originalGroupId = $channel->group_id;
         $this->sync($context, $playlist);
         $this->assertSame('specialty', $channel->refresh()->stream_id_custom);
         $this->assertSame($originalGroupId, $channel->group_id);
         $this->assertTrue((bool) Group::findOrFail($originalGroupId)->enabled);
-        $again = $this->sync($context, $playlist);
-        $this->assertSame(0, $again->data['writes']['channels_written']);
-        $this->assertSame(0, $again->data['quarantine']['planned']);
-        $this->assertTrue($channel->refresh()->enabled);
+        $this->assertSame(0, Group::where('playlist_id', $playlist->id)->where('name', 'Other')->count());
     }
 
     public function test_logo_preference_is_previewed_and_applied_to_primary_and_disabled_backup_with_fallbacks(): void

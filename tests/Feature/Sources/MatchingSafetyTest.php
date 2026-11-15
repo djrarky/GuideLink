@@ -239,6 +239,24 @@ class MatchingSafetyTest extends PluginFeatureTestCase
         $this->assertNull($fallback['source']);
     }
 
+    public function test_guide_only_red_button_initials_do_not_collapse_numbered_or_unnumbered_feeds(): void
+    {
+        $countries = new CountryRulesRepository;
+        $matcher = new ChannelMatcher($countries);
+        $thresholds = $matcher->thresholds([], []);
+        $index = $matcher->sourceIndex([[
+            'number' => 970, 'name' => 'BBC RB 1 HD', 'category' => 'Other', 'aliases' => [],
+            'stream_id' => '970.uk', 'guide_valid' => true, 'guide_only' => true,
+        ]], $countries->resolve([], []), $thresholds);
+        foreach (['', ...range(1, 24)] as $number) {
+            $title = trim('UK: BBC RED BUTTON '.$number).' ᴿᴬᵂ';
+            $channel = (new Channel)->forceFill(['title' => $title, 'name' => $title]);
+            $result = $matcher->match($channel, $index, $thresholds);
+            $this->assertSame($number === 1 ? 'auto_apply' : 'unmatched', $result['decision'], $title);
+            $this->assertSame($number === 1 ? '970.uk' : null, $result['source']['stream_id'] ?? null);
+        }
+    }
+
     public function test_exact_names_can_repair_a_stale_custom_mapping_after_a_slot_change(): void
     {
         $countries = new CountryRulesRepository;
