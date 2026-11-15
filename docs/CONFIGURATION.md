@@ -546,7 +546,7 @@ these native tables and columns when troubleshooting host compatibility.
 | Only process newly imported channels | `false` | Limit backup processing to channels marked as new by m3u-editor. Leave off to include existing eligible channels too. |
 | Reconsider existing backup assignments | `true` | Allow existing backup streams to be reconsidered during the next merge. The new-channels-only restriction still applies when enabled. |
 | Match backup streams by | Stream ID | Choose the identifier m3u-editor uses to group matching streams. Stream ID is the normal choice for GuideLink live channels; TMDB ID requires matching TMDB metadata. |
-| Prefer higher resolution | `true` | Prefer higher-resolution streams when choosing the primary stream. GuideLink sync uses saved statistics; separate native merge jobs may probe when needed. |
+| Prefer higher resolution | `true` | Prefer higher-resolution streams when choosing the primary stream. Run Sync also enables native live-stream metadata probing after provider imports. Turning this preference off leaves the probing setting unchanged. GuideLink sync uses saved statistics; separate native merge jobs may probe when needed. |
 | Prefer catch-up support | `true` | Prefer eligible streams with catch-up support before applying resolution and playlist preferences. |
 | Avoid primary streams that failed checks | `true` | Exclude failed streams during native primary selection. GuideLink sync recovery always keeps known-dead entries off. Uses saved health results; does not start a new check. |
 | Stream checker | empty | Leave blank for GuideLink to create or reuse its checker for each assigned playlist. A selected checker must belong to that playlist. GuideLink only changes checkers it manages; edit a user-managed checker in m3u-editor's Channel Scrubbers screen. |
@@ -557,6 +557,21 @@ these native tables and columns when troubleshooting host compatibility.
 | Rebuild backups after a successful scan | `true` | After the checker completes successfully, rerun m3u-editor's backup selection using the updated health results. |
 | Stream-check method | HTTP response check | Use an HTTP response check for a quick availability check, or FFprobe to inspect the media stream. |
 | Stream-check timeout (seconds) | `10` | Maximum time allowed for each stream check. Longer timeouts give slow streams more time to respond and can make a scan take longer. |
+
+When **Prefer higher resolution** is enabled, GuideLink manages **Probe Live
+streams after sync** on the assigned playlist. Preview Sync reports the proposed
+change; Run Sync enables the native setting and restores it on later runs if
+edited directly. Turning the preference off stops enforcement and leaves the
+current probing setting in place. No additional profile switch is required.
+
+This collects codec, resolution and bitrate metadata after a native provider
+import; it is separate from the stream checker's live/dead checks. GuideLink's
+metadata sync does not start probing. The existing only-unprobed, include-disabled,
+per-channel opt-out, timeout, batching and VOD probing settings remain unchanged,
+as do the settings on additional backup playlists. Enabled-only automatic probing
+skips hidden backups; native merge jobs can obtain missing statistics for eligible
+candidates when comparing resolution. GuideLink recovery continues using saved
+statistics, so new probe results affect a subsequent selection.
 
 GuideLink-managed scrubbers always keep direct live-channel re-enable and VOD
 scanning off. Native auto-merge handles primary/failover recovery after scans.

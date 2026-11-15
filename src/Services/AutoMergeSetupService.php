@@ -143,6 +143,19 @@ class AutoMergeSetupService
                 $desired['check_resolution'],
                 'Keep resolution priority aligned with the GuideLink profile.',
             ),
+            $desired['check_resolution']
+                ? $this->checkRow(
+                    'auto_probe_streams',
+                    'Probe Live streams after sync',
+                    (bool) $playlist->auto_probe_streams,
+                    true,
+                    'Enable native live-stream metadata probing after playlist imports to support the higher-resolution preference. Existing probing scope, timeout and batching settings are preserved.',
+                )
+                : $this->row(
+                    'info',
+                    'Probe Live streams after sync',
+                    'Automatic live-stream metadata probing remains user-managed while Prefer higher resolution is off. The current setting is preserved.',
+                ),
             $this->checkRow(
                 'prefer_catchup_as_primary',
                 'Prefer catch-up as primary',
@@ -182,6 +195,7 @@ class AutoMergeSetupService
             'auto_merge_channels_enabled' => true,
             'auto_merge_deactivate_failover' => (bool) $desired['deactivate_failover'],
             'auto_merge_config' => $config,
+            ...($desired['check_resolution'] ? ['auto_probe_streams' => true] : []),
         ];
         $changes = $this->changedFields($before, $after);
 
@@ -304,6 +318,7 @@ class AutoMergeSetupService
             'auto_merge_channels_enabled' => (bool) $playlist->auto_merge_channels_enabled,
             'auto_merge_deactivate_failover' => (bool) $playlist->auto_merge_deactivate_failover,
             'auto_merge_config' => is_array($playlist->auto_merge_config) ? $playlist->auto_merge_config : [],
+            'auto_probe_streams' => (bool) $playlist->auto_probe_streams,
         ];
     }
 

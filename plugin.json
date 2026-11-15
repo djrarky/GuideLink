@@ -1,7 +1,7 @@
 {
   "id": "guidelink",
   "name": "GuideLink",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "api_version": "1.0.0",
   "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
   "entrypoint": "Plugin.php",
@@ -983,7 +983,7 @@
                     "label": "Prefer higher resolution",
                     "type": "boolean",
                     "default": true,
-                    "helper_text": "Prefer higher-resolution streams when choosing the primary stream. GuideLink sync uses saved statistics; separate native merge jobs may probe when needed."
+                    "helper_text": "Prefer higher-resolution streams when choosing the primary stream. Run Sync also enables live-stream metadata probing after provider imports, preserving its scope and other options. Turning this preference off leaves probing unchanged. GuideLink sync uses saved statistics; native merge jobs may probe when needed."
                   },
                   {
                     "id": "settings.auto_merge_prefer_catchup_as_primary",

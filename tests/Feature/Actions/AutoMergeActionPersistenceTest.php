@@ -49,6 +49,7 @@ class AutoMergeActionPersistenceTest extends PluginFeatureTestCase
         $this->assertTrue($playlist->auto_merge_config['scrubber_aware_master_selection']);
         $this->assertTrue($playlist->auto_merge_config['check_resolution']);
         $this->assertTrue($playlist->auto_merge_config['prefer_catchup_as_primary']);
+        $this->assertTrue($playlist->auto_probe_streams);
 
         $this->assertDatabaseHas(RunResultRepository::TABLE, [
             'extension_plugin_run_id' => $context->run->id,
@@ -57,6 +58,26 @@ class AutoMergeActionPersistenceTest extends PluginFeatureTestCase
             'decision' => 'applied',
             'title' => 'Native auto-merge setup',
         ]);
+    }
+
+    public function test_auto_merge_audit_reports_conditional_probing_without_changing_the_playlist(): void
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true);
+        $playlist->forceFill(['auto_probe_streams' => false])->saveQuietly();
+        $service = new AutoMergeSetupService;
+        $before = $playlist->refresh()->getAttributes();
+
+        foreach ([true, false] as $preferResolution) {
+            $desired = $service->desiredConfig($playlist, ['auto_merge_check_resolution' => $preferResolution], $context);
+            $row = collect($service->auditRows($playlist, $desired))->firstWhere('title', 'Probe Live streams after sync');
+
+            $this->assertSame($preferResolution ? 'change_required' : 'info', $row['status']);
+            if ($preferResolution) {
+                $this->assertFalse($row['details']['current']);
+                $this->assertTrue($row['details']['desired']);
+            }
+            $this->assertSame($before, $playlist->refresh()->getAttributes());
+        }
     }
 
     public function test_rebuild_failovers_invokes_native_merge_and_promotes_live_hidden_failover(): void

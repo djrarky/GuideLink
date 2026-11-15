@@ -5,6 +5,7 @@ namespace AppLocalPlugins\GuideLink\Tests\Feature\Actions;
 require_once dirname(__DIR__).'/PluginFeatureTestCase.php';
 
 use App\Jobs\MergeChannels;
+use App\Jobs\ProbeChannelStreams;
 use App\Jobs\ProcessChannelScrubber;
 use App\Models\Channel;
 use App\Models\ChannelScrubber;
@@ -47,12 +48,14 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
     {
         [$context, $playlist] = $this->context(applyPluginSchema: true);
         $channel = $this->configure($context, $playlist);
+        $playlist->forceFill(['auto_probe_streams' => false])->saveQuietly();
         $before = [$playlist->refresh()->getAttributes(), $channel->getAttributes()];
 
         $result = $this->runGuideLinkAction('sync_playlist', ['playlist_id' => $playlist->id], $context);
 
         $this->assertTrue($result->success, $result->summary);
         $this->assertSame('change_required', $result->data['native_settings']['auto_merge']['status']);
+        $this->assertSame(['from' => false, 'to' => true], $result->data['native_settings']['auto_merge']['details']['changes']['auto_probe_streams']);
         $this->assertSame('change_required', $result->data['native_settings']['scrubber']['status']);
         $this->assertGreaterThan(0, $result->data['writes']['write_plan_channels']);
         $this->assertSame($before, [$playlist->refresh()->getAttributes(), $channel->refresh()->getAttributes()]);
@@ -64,6 +67,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         }
         Bus::assertNotDispatched(ProcessChannelScrubber::class);
         Bus::assertNotDispatched(MergeChannels::class);
+        Bus::assertNotDispatched(ProbeChannelStreams::class);
     }
 
     public function test_run_applies_native_settings_and_metadata_without_a_separate_setup_or_scan(): void
@@ -72,7 +76,18 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $backup = Playlist::factory()->for($context->user)->createQuietly();
         $backupBefore = $backup->refresh()->getAttributes();
         $channel = $this->configure($context, $playlist, ['auto_merge_failover_playlist_ids' => [$backup->id]]);
-        $playlist->forceFill(['auto_merge_config' => ['custom_option' => 'preserved']])->saveQuietly();
+        $probeOptions = [
+            'auto_probe_streams_only_unprobed' => false,
+            'auto_probe_streams_include_disabled' => true,
+            'probe_timeout' => 23,
+            'probe_use_batching' => true,
+            'auto_probe_vod_streams' => true,
+        ];
+        $playlist->forceFill([
+            'auto_merge_config' => ['custom_option' => 'preserved'],
+            'auto_probe_streams' => false,
+            ...$probeOptions,
+        ])->saveQuietly();
         $profile = DB::table(ProfileRepository::PROFILES_TABLE)->first();
         $assignment = DB::table(ProfileRepository::ASSIGNMENTS_TABLE)->first();
 
@@ -85,6 +100,8 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->assertTrue($playlist->auto_merge_config['scrubber_aware_master_selection']);
         $this->assertTrue($playlist->auto_merge_config['check_resolution']);
         $this->assertTrue($playlist->auto_merge_config['prefer_catchup_as_primary']);
+        $this->assertTrue($playlist->auto_probe_streams);
+        $this->assertSame($probeOptions, $playlist->only(array_keys($probeOptions)));
         $this->assertSame('bbc.one', $channel->refresh()->stream_id_custom);
         $this->assertSame(1, $result->data['writes']['channels_written']);
         $scrubber = ChannelScrubber::where('playlist_id', $playlist->id)->firstOrFail();
@@ -100,12 +117,45 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->assertEquals($assignment, DB::table(ProfileRepository::ASSIGNMENTS_TABLE)->first());
         Bus::assertNotDispatched(ProcessChannelScrubber::class);
         Bus::assertNotDispatched(MergeChannels::class);
+        Bus::assertNotDispatched(ProbeChannelStreams::class);
 
         $again = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
         $this->assertTrue($again->success, $again->summary);
         $this->assertSame('ok', $again->data['native_settings']['auto_merge']['status']);
         $this->assertSame('ok', $again->data['native_settings']['scrubber']['status']);
         $this->assertSame(1, ChannelScrubber::count());
+    }
+
+    public function test_resolution_preference_restores_probing_and_releases_control_when_disabled(): void
+    {
+        [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
+        $this->configure($context, $playlist);
+        $payload = ['playlist_id' => $playlist->id];
+        $this->assertTrue($this->runGuideLinkAction('apply_sync_playlist', $payload, $context)->success);
+
+        $playlist->refresh()->forceFill(['auto_probe_streams' => false])->saveQuietly();
+        $result = $this->runGuideLinkAction('apply_sync_playlist', $payload, $context);
+
+        $this->assertTrue($result->success, $result->summary);
+        $this->assertTrue($playlist->refresh()->auto_probe_streams);
+        $this->assertSame(['auto_probe_streams'], $result->data['native_settings']['auto_merge']['details']['changed_fields']);
+
+        $profile = DB::table(ProfileRepository::PROFILES_TABLE)->first();
+        $settings = json_decode($profile->settings, true);
+        $settings['auto_merge_check_resolution'] = false;
+        DB::table(ProfileRepository::PROFILES_TABLE)->where('id', $profile->id)->update(['settings' => json_encode($settings)]);
+
+        foreach ([true, false] as $enabled) {
+            $playlist->refresh()->forceFill(['auto_probe_streams' => $enabled])->saveQuietly();
+            $result = $this->runGuideLinkAction('apply_sync_playlist', $payload, $context);
+
+            $this->assertTrue($result->success, $result->summary);
+            $this->assertSame($enabled, $playlist->refresh()->auto_probe_streams);
+            $this->assertArrayNotHasKey('auto_probe_streams', $result->data['native_settings']['auto_merge']['details']['desired']);
+            $this->assertArrayNotHasKey('auto_probe_streams', $result->data['native_settings']['auto_merge']['details']['changes']);
+        }
+
+        Bus::assertNotDispatched(ProbeChannelStreams::class);
     }
 
     public function test_sync_plans_and_writes_using_the_same_existing_group(): void
@@ -198,7 +248,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
             'scraping_api' => 'scrapedo', 'scraping_api_key' => 'test-secret',
             'playlist_layout_managed' => true,
         ]);
-        $playlist->forceFill(['auto_sort' => true, 'force_channel_numbering' => true])->saveQuietly();
+        $playlist->forceFill(['auto_sort' => true, 'force_channel_numbering' => true, 'auto_probe_streams' => false])->saveQuietly();
         Http::fake(['*' => Http::response('Unavailable: token=test-secret', 503)]);
 
         $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
@@ -207,6 +257,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->assertFalse((bool) $playlist->refresh()->auto_merge_channels_enabled);
         $this->assertTrue((bool) $playlist->auto_sort);
         $this->assertTrue((bool) $playlist->force_channel_numbering);
+        $this->assertFalse($playlist->auto_probe_streams);
         $this->assertSame(0, ChannelScrubber::count());
         $this->assertStringNotContainsString('test-secret', json_encode($result->toArray()));
         $this->assertStringNotContainsString('test-secret', $context->run->logs()->get()->toJson());
@@ -372,7 +423,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
     {
         [$context, $playlist] = $this->context(applyPluginSchema: true, dryRun: false);
         $channel = $this->configure($context, $playlist, ['playlist_layout_managed' => true]);
-        $playlist->forceFill(['auto_sort' => true, 'force_channel_numbering' => true])->saveQuietly();
+        $playlist->forceFill(['auto_sort' => true, 'force_channel_numbering' => true, 'auto_probe_streams' => false])->saveQuietly();
         $before = $channel->getAttributes();
         $scrubber = \Mockery::mock(ScrubberSetupService::class)->makePartial();
         $scrubber->shouldReceive('apply')->once()->andThrow(new \RuntimeException('Scrubber save failed'));
@@ -389,6 +440,7 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->assertTrue((bool) $playlist->auto_sort);
         $this->assertTrue((bool) $playlist->force_channel_numbering);
         $this->assertSame($before, $channel->refresh()->getAttributes());
+        $this->assertFalse($playlist->auto_probe_streams);
     }
 
     public function test_scheduled_sync_configures_each_enabled_assignment_only(): void
@@ -412,6 +464,9 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
         $this->assertTrue($first->refresh()->auto_merge_channels_enabled);
         $this->assertTrue($second->refresh()->auto_merge_channels_enabled);
         $this->assertFalse((bool) $disabled->refresh()->auto_merge_channels_enabled);
+        $this->assertTrue($first->auto_probe_streams);
+        $this->assertTrue($second->auto_probe_streams);
+        $this->assertFalse((bool) $disabled->auto_probe_streams);
         $this->assertSame(2, ChannelScrubber::count());
     }
 
