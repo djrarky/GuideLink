@@ -39,7 +39,7 @@ permissions:
 jobs:
   contract:
     name: CI / Plugin Contract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Configure checkout CA
@@ -76,7 +76,7 @@ jobs:
 
   code-quality:
     name: CI / Plugin Code Quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: contract
     timeout-minutes: 20
     steps:
@@ -145,7 +145,7 @@ jobs:
 
   host-plugin-tests:
     name: CI / Plugin Host Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [contract, code-quality]
     timeout-minutes: 30
     services:
