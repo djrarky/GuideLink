@@ -47,27 +47,32 @@ class RefreshSourceCacheAction extends GuideLinkAction
             $runResults,
         );
 
-        $context->checkpoint(100, 'Source cache refresh completed.', [
+        $staleFallback = (bool) ($summary['source']['stale_fallback'] ?? false);
+        $context->checkpoint(100, $staleFallback ? 'Source refresh failed; last-good cache retained.' : 'Source cache refresh completed.', [
             'source' => $summary['source'],
             'run_results' => $resultDetails,
         ], log: true);
 
-        return PluginActionResult::success(
-            match (true) {
-                (bool) ($summary['source']['stale_fallback'] ?? false) => "Source refresh failed; using the last-good cache ({$summary['source']['channel_count']} channels).",
-                (bool) ($summary['source']['from_cache'] ?? false) => "Using fresh source cache: {$summary['source']['channel_count']} channel(s).",
-                default => "Source cache refreshed: {$summary['source']['channel_count']} channel(s).",
-            },
-            [
-                ...$summary,
-                'totals' => [
-                    'channels' => (int) ($summary['source']['channel_count'] ?? 0),
-                    'from_cache' => (bool) ($summary['source']['from_cache'] ?? false),
-                    'stale_fallback' => (bool) ($summary['source']['stale_fallback'] ?? false),
-                ],
-                'run_results' => $resultDetails,
-                'progress' => 100,
+        $data = [
+            ...$summary,
+            'source_failure' => $staleFallback,
+            'totals' => [
+                'channels' => (int) ($summary['source']['channel_count'] ?? 0),
+                'from_cache' => (bool) ($summary['source']['from_cache'] ?? false),
+                'stale_fallback' => $staleFallback,
             ],
+            'run_results' => $resultDetails,
+            'progress' => 100,
+        ];
+        if ($staleFallback) {
+            return PluginActionResult::failure("Source refresh failed; using the last-good cache ({$summary['source']['channel_count']} channels).", $data);
+        }
+
+        return PluginActionResult::success(
+            ($summary['source']['from_cache'] ?? false)
+                ? "Using fresh source cache: {$summary['source']['channel_count']} channel(s)."
+                : "Source cache refreshed: {$summary['source']['channel_count']} channel(s).",
+            $data,
         );
     }
 
@@ -113,7 +118,12 @@ class RefreshSourceCacheAction extends GuideLinkAction
                 if (! isset($resultsByConfig[$key])) {
                     try {
                         $result = $refresh->refresh($profilePayload, $context);
-                        $resultsByConfig[$key] = ['status' => 'completed', 'summary' => $result['summary']];
+                        $fallback = (bool) ($result['summary']['source']['stale_fallback'] ?? false);
+                        $resultsByConfig[$key] = [
+                            'status' => $fallback ? 'failed' : 'completed',
+                            'source_failure' => $fallback,
+                            'summary' => $result['summary'],
+                        ];
                     } catch (RunCancelled $exception) {
                         throw $exception;
                     } catch (\Throwable $exception) {
@@ -133,7 +143,7 @@ class RefreshSourceCacheAction extends GuideLinkAction
                     ...$outcome,
                 ];
                 $resultRow = $this->sourceRefreshRow($profilePayload, $outcome['summary']);
-                if ($outcome['status'] === 'failed') {
+                if ($outcome['status'] === 'failed' && ! ($outcome['summary']['source']['stale_fallback'] ?? false)) {
                     $resultRow['status'] = 'failed';
                     $resultRow['recommendation'] = 'Correct the source refresh error and retry this profile.';
                 }
@@ -158,11 +168,12 @@ class RefreshSourceCacheAction extends GuideLinkAction
             return PluginActionResult::cancelled('Source cache refresh cancelled; completed profile results were saved.', $data);
         }
         if ($failed > 0) {
-            return PluginActionResult::failure("Source refresh failed for {$failed} profile(s); all profile results were saved.", $data);
+            return PluginActionResult::failure("Source refresh failed for {$failed} profile(s)."
+                .($fallbacks > 0 ? " Last-good caches retained for {$fallbacks} profile(s)." : '')
+                .' All profile results were saved.', $data);
         }
 
-        return PluginActionResult::success('Source cache refresh completed for '.count($rows).' profile(s).'
-            .($fallbacks > 0 ? " {$fallbacks} profile(s) used last-good caches because refresh failed." : ''), $data);
+        return PluginActionResult::success('Source cache refresh completed for '.count($rows).' profile(s).', $data);
     }
 
     /**
@@ -210,7 +221,7 @@ class RefreshSourceCacheAction extends GuideLinkAction
             'title' => (string) ($payload['profile_name'] ?? 'Manual source refresh'),
             'source_name' => "{$identity['country']}/{$identity['provider']}/{$identity['provider_source']}/{$identity['region']}",
             'recommendation' => $staleFallback
-                ? 'Refresh failed and GuideLink used the parsed last-good cache.'
+                ? 'Refresh failed; last-good cache retained. Correct the source refresh error and retry this profile.'
                 : 'Source cache is ready for sync and availability checks.',
             'profile_id' => $payload['profile_id'] ?? null,
             'profile_name' => $payload['profile_name'] ?? null,

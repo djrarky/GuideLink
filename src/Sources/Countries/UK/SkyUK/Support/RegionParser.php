@@ -133,6 +133,124 @@ class RegionParser
             }
         }
 
+        if ($regions === [] && $this->sourceName === 'viewersvault') {
+            return $this->matrixRegions($document);
+        }
+
+        return $regions;
+    }
+
+    /** Read the region key and country/channel matrix used by current ViewersVault pages. */
+    private function matrixRegions(\DOMDocument $document): array
+    {
+        $keys = [];
+        $channels = [];
+        $countries = ['England', 'Wales', 'Scotland', 'Northern Ireland', 'Ireland'];
+        foreach ($document->getElementsByTagName('table') as $table) {
+            if (! $this->html->hasClass($table, 'wikitable')) {
+                continue;
+            }
+            $grid = $this->html->grid($table);
+            $headers = array_map('strtolower', $grid[0] ?? []);
+            $numberColumn = array_search('region number', $headers, true);
+            $regionColumn = array_search('region name', $headers, true);
+            if ($numberColumn !== false && $regionColumn !== false) {
+                foreach (array_slice($grid, 1) as $row) {
+                    $number = $row[$numberColumn] ?? '';
+                    $name = trim($row[$regionColumn] ?? '');
+                    if (preg_match('/^[1-9][0-9]?$/', $number) !== 1 || $name === '') {
+                        continue;
+                    }
+                    if (isset($keys[(int) $number]) && $keys[(int) $number] !== $name) {
+                        throw new \RuntimeException("Conflicting Sky region names for region [{$number}].");
+                    }
+                    $keys[(int) $number] = $name;
+                }
+
+                continue;
+            }
+            $nameColumn = array_search('channel name', $headers, true);
+            if ($nameColumn === false) {
+                continue;
+            }
+            foreach (array_slice($grid, 1) as $row) {
+                $name = preg_replace('/\s+(?:HD|SD|UHD|4K)$/i', '', $row[$nameColumn] ?? '');
+                $name = preg_replace('/(\+1)(?:\s+\+1)+$/', '$1', $name); // Text plus a separate +1 badge.
+                // Only regional services contribute to the region descriptor.
+                if (preg_match('/^(?:BBC One|BBC Two|ITV1|STV|UTV|Channel 4|Virgin Media One)\b/', $name) !== 1) {
+                    continue;
+                }
+                $mapping = [];
+                foreach ($countries as $country) {
+                    $column = array_search(strtolower($country), $headers, true);
+                    if ($column === false) {
+                        continue;
+                    }
+                    preg_match_all('/(?<![0-9])([1-9][0-9]{2})\s*\(Regions?\s+([0-9,\s]+)\)/i', $row[$column] ?? '', $matches, PREG_SET_ORDER);
+                    foreach ($matches as $match) {
+                        foreach (preg_split('/\s*,\s*/', trim($match[2])) as $region) {
+                            $mapping[$country][(int) $region] = (int) $match[1];
+                        }
+                    }
+                }
+                if ($mapping !== []) {
+                    $channels[] = ['name' => $name, 'mapping' => $mapping];
+                }
+            }
+        }
+
+        $regions = [];
+        foreach ($keys as $number => $name) {
+            // The primary commercial service distinguishes the country, even
+            // where BBC rows span several country columns. Do not guess England.
+            $homeCountries = [];
+            foreach ($channels as $channel) {
+                if (! in_array($channel['name'], ['ITV1', 'STV', 'UTV', 'Virgin Media One'], true)) {
+                    continue;
+                }
+                foreach ($channel['mapping'] as $country => $slots) {
+                    if (($slots[$number] ?? null) === 103) {
+                        $homeCountries[$country] = true;
+                    }
+                }
+            }
+            if (count($homeCountries) !== 1) {
+                continue;
+            }
+            $country = array_key_first($homeCountries);
+            $feeds = [];
+            $bbcOne = [];
+            foreach ($channels as $channel) {
+                $slot = $channel['mapping'][$country][$number] ?? null;
+                if ($slot !== null) {
+                    $feeds[] = [(string) $slot, $channel['name']];
+                }
+                // Regional BBC feeds are listed at 95x everywhere except their
+                // home regions, which receive that feed in the primary slot.
+                if (preg_match('/^BBC One (.+)$/', $channel['name'], $match) === 1) {
+                    $available = [];
+                    foreach ($channel['mapping'] as $slots) {
+                        $available += $slots;
+                    }
+                    if (! isset($available[$number])) {
+                        $bbcOne[$match[1]] = true;
+                    }
+                }
+            }
+            $region = $this->channelTableRegion([['Sky Q number', 'Channel'], ...$feeds], ['num' => $number, 'name' => $name]);
+            if ($region === null) {
+                continue;
+            }
+            $region['country'] = $country;
+            if (count($bbcOne) === 1 && $region['bbc_one'] === 'Network') {
+                $region['bbc_one'] = array_key_first($bbcOne);
+            }
+            if ($country === 'Scotland' && in_array(['103', 'STV'], $feeds, true)) {
+                $region['itv'] = 'STV';
+            }
+            $regions[] = $region;
+        }
+
         return $regions;
     }
 

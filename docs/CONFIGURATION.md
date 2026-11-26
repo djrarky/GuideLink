@@ -216,8 +216,10 @@ Alerts cover failed actions and playlist hooks, including invalid configuration
 and failed writes. A source refresh that cannot fetch, parse, validate or save
 listings raises a warning when a last-good cache remains usable, or a danger
 notification when none is usable. Quota/request-limit and credential errors get
-specific guidance. A cache fallback can therefore raise an alert even when the
-overall run succeeds. Ordinary unmatched/review channels and informational run
+specific guidance. Refresh Source Cache marks the run as failed when it uses a
+last-good cache after a refresh error; the cache remains available for sync.
+Other actions that can finish using a last-good cache may still succeed while
+raising the source warning. Ordinary unmatched/review channels and informational run
 warnings do not generate individual alerts.
 
 Administrators receive all incidents. Playlist incidents also notify the owner
@@ -303,8 +305,10 @@ in one profile does not stop independent profiles; completed and failed results
 are retained. Cancelled batches save completed profile results. Fresh caches do
 not require an API key just to read them. Permanent HTTP errors such as 401/403
 stop retries; HTTP 429 rate limits also stop immediate retries. Temporary failures
-retain the configured retry policy. A run using
-a last-good cache explicitly reports that the refresh failed.
+retain the configured retry policy. A refresh run using a last-good cache after
+an error is marked failed, including each affected profile in a batch. Results
+retain the `stale_fallback` decision, original fetch date and refresh error, so
+the failed refresh is visible without discarding usable cached data.
 
 Cache freshness uses the recorded fetch time, so copying an old cache does not
 make it fresh. Legacy caches without a fetch timestamp use file modification

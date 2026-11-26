@@ -59,6 +59,35 @@ class SourceRefreshBatchTest extends PluginFeatureTestCase
         $this->assertSame([1, 500], $minimums);
     }
 
+    public function test_stale_fallback_fails_shared_profiles_and_preserves_diagnostics_while_other_sources_refresh(): void
+    {
+        [$context] = $this->context(applyPluginSchema: true);
+        $this->profiles($context->plugin->id, [
+            'A fallback' => ['region' => '7'], 'B shared fallback' => ['region' => '7'], 'C fresh' => ['region' => '1'],
+        ]);
+        $refresh = Mockery::mock(SourceRefreshService::class);
+        $refresh->shouldReceive('refresh')->twice()->andReturnUsing(fn ($payload): array => [
+            'summary' => ['source' => [
+                'channel_count' => 298,
+                'from_cache' => $payload['region'] === '7',
+                'stale_fallback' => $payload['region'] === '7',
+                'fetched_at' => '2026-11-13T02:33:29+00:00',
+                'refresh_error' => $payload['region'] === '7' ? 'No Sky regions were parsed.' : null,
+            ]],
+        ]);
+        $result = $this->action($refresh)->handle(['force_refresh' => true], $context);
+        $this->assertFalse($result->success);
+        $this->assertSame('failed', $result->status);
+        $this->assertSame(['failed', 'failed', 'completed'], array_column($result->data['profiles'], 'status'));
+        $this->assertSame(2, $result->data['failed']);
+        $this->assertSame(2, $result->data['stale_fallbacks']);
+        $this->assertTrue($result->data['source_failure']);
+        $this->assertStringContainsString('Last-good caches retained for 2 profile(s)', $result->summary);
+        $this->assertSame('No Sky regions were parsed.', $result->data['profiles'][0]['summary']['source']['refresh_error']);
+        $this->assertSame('2026-11-13T02:33:29+00:00', $result->data['profiles'][0]['summary']['source']['fetched_at']);
+        $this->assertSame(['stale_fallback', 'stale_fallback', 'refreshed'], DB::table(RunResultRepository::TABLE)->orderBy('id')->pluck('decision')->all());
+    }
+
     public function test_cancellation_persists_completed_profile_results(): void
     {
         [$context] = $this->context(applyPluginSchema: true);

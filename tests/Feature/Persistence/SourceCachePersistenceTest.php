@@ -264,7 +264,8 @@ class SourceCachePersistenceTest extends PluginFeatureTestCase
         $before = Storage::disk('local')->get($path);
         Http::fake(['*' => Http::response(['Message' => 'Monthly request limit exceeded'], 401)]);
         $result = (new RefreshSourceCacheAction)->handle([...$config, 'profile_sources' => false], $context);
-        $this->assertTrue($result->success);
+        $this->assertFalse($result->success);
+        $this->assertSame('failed', $result->status);
         $this->assertTrue($result->data['source']['stale_fallback']);
         $this->assertStringContainsString('using the last-good cache', $result->summary);
         $this->assertStringContainsString('after 1 attempt(s)', $result->data['source']['refresh_error']);

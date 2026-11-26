@@ -144,7 +144,7 @@ class NativeAlertTest extends PluginFeatureTestCase
         $this->assertCount(2, $messages);
     }
 
-    public function test_refresh_action_alerts_on_fallback_even_when_run_succeeds(): void
+    public function test_refresh_action_fails_on_fallback_without_duplicate_operation_alerts(): void
     {
         Storage::fake('local');
         Http::preventStrayRequests();
@@ -157,7 +157,9 @@ class NativeAlertTest extends PluginFeatureTestCase
             ['number' => 101, 'name' => 'BBC One', 'category' => 'Entertainment', 'aliases' => []],
         ], ['fetched_at' => now()->subDays(5)->toIso8601String()]);
         $result = $this->runGuideLinkAction('refresh_source_cache', $payload, $context);
-        $this->assertTrue($result->success, $result->summary);
+        $this->assertFalse($result->success);
+        $this->assertSame('failed', $result->status);
+        $this->assertTrue($result->data['source_failure']);
         $this->assertTrue($result->data['source']['stale_fallback']);
         $this->assertCount(1, $messages);
         $this->assertStringContainsString('source refresh failed', $messages[0]);
