@@ -2,7 +2,7 @@ name: Publish verified GuideLink v0.1.8
 
 on:
   push:
-    tags: ['publish-guidelink-v0.1.8-retry1']
+    tags: ['publish-guidelink-v0.1.8-retry2']
 
 permissions:
   contents: read
@@ -30,7 +30,7 @@ jobs:
           trap 'echo "::error::Publication verification failed at shell line $LINENO"' ERR
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yaml/runs?head_sha=$RELEASE_COMMIT&per_page=100" > "$RUNNER_TEMP/release-runs.json"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release-before.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           python3 - <<'PY'
           import json
           import sys
@@ -40,7 +40,11 @@ jobs:
           temp = Path(os.environ['RUNNER_TEMP'])
           runs = json.loads((temp / 'release-runs.json').read_text())['workflow_runs']
           assert any(r['head_sha'] == os.environ['RELEASE_COMMIT'] and r['head_branch'] == os.environ['RELEASE_TAG'] and r['event'] == 'push' and r['status'] == 'completed' and r['conclusion'] == 'success' for r in runs), 'Release validation has not passed'
-          release = json.loads((temp / 'release-before.json').read_text())
+          releases = json.loads((temp / 'releases.json').read_text())
+          matches = [r for r in releases if r['tag_name'] == os.environ['RELEASE_TAG']]
+          assert len(matches) == 1, f"Expected one release for {os.environ['RELEASE_TAG']}, found {len(matches)}"
+          release = matches[0]
+          (temp / 'release-before.json').write_text(json.dumps(release))
           assert release['tag_name'] == os.environ['RELEASE_TAG'], f"Unexpected tag: {release['tag_name']}"
           assert release['name'] == 'GuideLink v0.1.8', f"Unexpected release name: {release['name']}"
           assert release['draft'] and not release['prerelease'], f"Unexpected release state: draft={release['draft']}, prerelease={release['prerelease']}"
