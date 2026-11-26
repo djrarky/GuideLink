@@ -8,6 +8,7 @@ use AppLocalPlugins\GuideLink\Support\GroupIdentity;
 use AppLocalPlugins\GuideLink\Support\Options;
 use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
 use AppLocalPlugins\GuideLink\Support\ProfileSettings;
+use AppLocalPlugins\GuideLink\Support\RunCancelled;
 use AppLocalPlugins\GuideLink\Support\RunProgress;
 use Illuminate\Support\Facades\DB;
 
@@ -112,7 +113,7 @@ class SyncPlaylistAction extends GuideLinkAction
             $rules,
             $context,
         );
-        $writePlan = $writePlans->rows($matchRows, $groupsByName, $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+        $writePlan = $writePlans->rows($matchRows, $groupsByName, $logoSource, $preservedGroupKeys);
         // Quarantine follows matching decisions, including unchanged channels;
         // an empty metadata diff does not mean a channel is out of scope.
         $decisions = [...$matchRows, ...$scope['excluded']];
@@ -207,7 +208,7 @@ class SyncPlaylistAction extends GuideLinkAction
 
             // Existing and restored groups already have their final IDs in the preview plan.
             if (isset($groupActionCounts['create'])) {
-                $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $guide['channel_ids'], $logoSource, $preservedGroupKeys);
+                $writePlan = $writePlans->rows($matchRows, $groupResult['groups_by_name'], $logoSource, $preservedGroupKeys);
             }
 
             $context->checkpoint(82, 'Applying diff-only channel metadata writes.', [
@@ -272,11 +273,25 @@ class SyncPlaylistAction extends GuideLinkAction
             $recoveryResult = $this->services->matchedChannelRecovery()->apply($playlist, $matchRows, $writePlan, $context);
         }
 
+        $epgMappingError = null;
+        if (! $summary['writes']['aborted'] && $summary['writes']['channels_failed'] === 0 && $summary['writes']['groups_failed'] === 0) {
+            try {
+                $nativeSettings['epg_mapping'] = $this->services->epgMappingSetup()->apply($playlist, $guide['epg'], $logoSource === 'epg', $context);
+                $runResults->replaceRows($context, (int) $playlist->id, [$nativeSettings['epg_mapping']], 'epg_mapping_audit');
+            } catch (RunCancelled) {
+                $summary['writes']['aborted'] = true;
+            } catch (\Throwable $exception) {
+                $epgMappingError = $exception->getMessage();
+                $context->warning('Native EPG mapping setup did not complete.', ['error' => $epgMappingError]);
+            }
+        }
+
         $data = [
             ...$summary,
             'totals' => $this->totals($summary),
             'source_cache' => $sourceCache,
             'native_settings' => $nativeSettings,
+            'epg_mapping_error' => $epgMappingError,
             'matched_recovery' => $recoveryResult,
             'quarantine' => [
                 'planned' => count($quarantinePlan),
@@ -295,6 +310,9 @@ class SyncPlaylistAction extends GuideLinkAction
         if ($summary['writes']['channels_failed'] > 0 || $summary['writes']['groups_failed'] > 0) {
             return PluginActionResult::failure('Sync had write failures; inspect the channel, quarantine, recovery and group results. Successful changes were retained.', $data);
         }
+        if ($epgMappingError !== null) {
+            return PluginActionResult::failure('Channel sync completed, but native EPG mapping setup failed: '.$epgMappingError, $data);
+        }
 
         $context->checkpoint(100, $context->dryRun ? 'Sync playlist preview completed.' : 'Sync playlist apply completed.', [
             'matching' => $summary['matching'],
@@ -302,10 +320,15 @@ class SyncPlaylistAction extends GuideLinkAction
             'run_results' => $resultDetails,
         ], log: true);
 
+        $epgStatus = $nativeSettings['epg_mapping']['status'] ?? 'ok';
+        $epgMessage = in_array($epgStatus, ['queued', 'processing'], true)
+            ? ' Native EPG mapping is '.$epgStatus.'; see EPG Maps for completion.'
+            : '';
+
         return PluginActionResult::success(
             $context->dryRun
                 ? 'Sync preview completed without changing native settings or channel metadata.'
-                : "Sync completed: {$summary['writes']['channels_written']} metadata update(s), {$summary['writes']['unmanaged_channels_disabled']} unconfirmed channel(s) disabled, {$recoveryResult['enabled']} primary stream(s) enabled, {$recoveryResult['disabled']} duplicate or unavailable entry/entries disabled, and {$summary['writes']['groups_disabled']} provider group(s) disabled.",
+                : "Sync completed: {$summary['writes']['channels_written']} metadata update(s), {$summary['writes']['unmanaged_channels_disabled']} unconfirmed channel(s) disabled, {$recoveryResult['enabled']} primary stream(s) enabled, {$recoveryResult['disabled']} duplicate or unavailable entry/entries disabled, and {$summary['writes']['groups_disabled']} provider group(s) disabled.".$epgMessage,
             [...$data, 'progress' => 100],
         );
     }

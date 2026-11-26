@@ -4,6 +4,7 @@ namespace AppLocalPlugins\GuideLink\Tests\Feature\Actions;
 
 require_once dirname(__DIR__).'/PluginFeatureTestCase.php';
 
+use App\Jobs\MapPlaylistChannelsToEpg;
 use App\Jobs\MergeChannels;
 use App\Jobs\ProbeChannelStreams;
 use App\Jobs\ProcessChannelScrubber;
@@ -290,6 +291,8 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
 
         $this->assertSame('failed', $result->status);
         $this->assertSame(1, $result->data['writes']['channels_failed']);
+        Bus::assertNotDispatched(MapPlaylistChannelsToEpg::class);
+        $this->assertDatabaseCount('epg_maps', 0);
         $this->assertNotEmpty($result->data['writes']['errors']);
         $this->assertSame(0, $result->data['writes']['unmanaged_channels_disabled']);
         $this->assertSame($before, $channel->refresh()->getAttributes());
@@ -323,6 +326,8 @@ class SyncNativeConfigurationTest extends PluginFeatureTestCase
 
         $this->assertSame('cancelled', $result->status);
         $this->assertTrue($result->data['writes']['aborted']);
+        Bus::assertNotDispatched(MapPlaylistChannelsToEpg::class);
+        $this->assertDatabaseCount('epg_maps', 0);
         $this->assertSame(0, $result->data['writes']['channels_written']);
         $this->assertSame($before, $channel->refresh()->getAttributes());
         $this->assertDatabaseHas(RunResultRepository::TABLE, [

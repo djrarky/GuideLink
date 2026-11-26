@@ -14,11 +14,11 @@ class GuideMapService
     private array $preparedMap = [];
 
     /**
-     * Resolve the required m3u-editor EPG into the Python-compatible
-     * channel-number => stream-id guide map.
+     * Read numbered guide identities for source matching. Database associations
+     * belong to the native EPG mapper and are not part of this contract.
      *
      * @param  array<string, mixed>  $payload
-     * @return array{epg: array{id: int, uuid: string, name: string}, map: array<int, string>, aliases: array<int, array<int, string>>, channel_ids: array<int, int>}
+     * @return array{epg: array{id: int, uuid: string, name: string}, map: array<int, string>, aliases: array<int, array<int, string>>}
      */
     public function resolve(array $payload, PluginExecutionContext $context): array
     {
@@ -33,9 +33,7 @@ class GuideMapService
         }
 
         $epg = $this->epgOrFail($context, $epgId);
-        $aliases = [];
-        $channelIds = [];
-        $map = $this->mapForEpg($epg, $aliases, $channelIds);
+        [$map, $aliases] = $this->mapForEpg($epg);
         if ($map === []) {
             throw new \RuntimeException('The selected Guide EPG has no usable channel-number-to-stream-ID mappings. Import a numbered guide before running GuideLink.');
         }
@@ -53,7 +51,6 @@ class GuideMapService
             ],
             'map' => $map,
             'aliases' => $aliases,
-            'channel_ids' => $channelIds,
         ];
     }
 
@@ -84,29 +81,26 @@ class GuideMapService
     }
 
     /**
-     * @param  array<int, array<int, string>>  $aliases
-     * @param  array<int, int>  $channelIds
-     * @return array<int, string>
+     * @return array{array<int, string>, array<int, array<int, string>>}
      */
-    private function mapForEpg(Epg $epg, array &$aliases, array &$channelIds): array
+    private function mapForEpg(Epg $epg): array
     {
         $channels = EpgChannel::query()
             ->where('epg_id', $epg->id)
             ->orderBy('display_name')
             ->orderBy('channel_id')
             ->orderBy('id')
-            ->get(['id', 'channel_id', 'display_name', 'name', 'additional_display_names']);
+            ->get(['channel_id', 'display_name', 'name', 'additional_display_names']);
         // Read current rows before reusing preparation; timestamps alone miss
         // same-second edits and imports that do not update the parent EPG.
         $inputs = [$epg->id, $channels->map(fn (EpgChannel $channel): array => $channel->getAttributes())->all()];
         if ($this->mapInputs === $inputs) {
-            [$map, $aliases, $channelIds] = $this->preparedMap;
-
-            return $map;
+            return $this->preparedMap;
         }
         $map = [];
+        $aliases = [];
         $streamIds = [];
-        $channels->each(function (EpgChannel $channel) use (&$map, &$streamIds, &$aliases, &$channelIds): void {
+        foreach ($channels as $channel) {
             $names = array_map(
                 fn (mixed $name): string => trim((string) $name),
                 [$channel->display_name, $channel->name, ...($channel->additional_display_names ?? [])],
@@ -115,7 +109,7 @@ class GuideMapService
             $streamId = trim((string) $channel->channel_id);
 
             if ($number === null || $streamId === '') {
-                return;
+                continue;
             }
 
             if (isset($map[$number]) && $map[$number] !== $streamId) {
@@ -126,12 +120,11 @@ class GuideMapService
                 throw new \RuntimeException("Guide EPG stream id [{$streamId}] appears against more than one channel number.");
             }
 
-            if (isset($channelIds[$number])) {
+            if (isset($map[$number])) {
                 throw new \RuntimeException("Guide EPG has duplicate records for channel number [{$number}] and stream id [{$streamId}]. Remove the ambiguous guide record before syncing.");
             }
 
             $map[$number] = $streamId;
-            $channelIds[$number] = (int) $channel->id;
             $streamIds[$streamId] = $number;
             foreach ($names as $name) {
                 // Number-only display names identify the guide slot, not
@@ -140,22 +133,19 @@ class GuideMapService
                     $aliases[$number][] = $name;
                 }
             }
-        });
+        }
 
         $aliases = array_map(fn (array $names): array => array_values(array_unique($names)), $aliases);
         ksort($map);
         $this->mapInputs = $inputs;
-        $this->preparedMap = [$map, $aliases, $channelIds];
 
-        return $map;
+        return $this->preparedMap = [$map, $aliases];
     }
 
     /** @param array<int, string> $values */
     private function channelNumber(array $values): ?int
     {
-        // Python reads the XMLTV number from a display-name that is only digits.
-        // Prefer that exact signal before falling back to m3u-editor display names
-        // like "101 BBC One".
+        // Prefer number-only XMLTV labels before prefixed names like "101 BBC One".
         $numbers = array_values(array_unique(array_filter($values, fn (string $value): bool => $value !== '' && ctype_digit($value))));
         if (count($numbers) > 1) {
             throw new \RuntimeException('Guide EPG contains conflicting channel-number labels. Resolve the ambiguous guide record before syncing.');

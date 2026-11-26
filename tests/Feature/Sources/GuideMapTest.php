@@ -82,7 +82,6 @@ class GuideMapTest extends PluginFeatureTestCase
         $changed = $maps->resolve($payload, $context);
         $this->assertSame([102 => 'bbc.one'], $changed['map']);
         $this->assertContains('Updated Name', $changed['aliases'][102]);
-        $this->assertSame($first['channel_ids'][101], $changed['channel_ids'][102]);
 
         EpgChannel::factory()->createQuietly([
             'epg_id' => $epgId, 'user_id' => $context->user->id,

@@ -7,6 +7,7 @@ require_once dirname(__DIR__).'/PluginFeatureTestCase.php';
 use App\Models\Channel;
 use App\Models\Epg;
 use App\Models\EpgChannel;
+use App\Models\EpgMap;
 use App\Models\Playlist;
 use App\Models\User;
 use App\Plugins\Support\PluginExecutionContext;
@@ -41,7 +42,7 @@ class BundledAliasesTest extends PluginFeatureTestCase
         $sets = DB::table(ProfileAliasResolver::SETS)->get()->toArray();
         $result = $this->runGuideLinkAction('preview_alias_set', ['alias_set_id' => $set], $context);
         $this->assertTrue($result->success, $result->summary);
-        $this->assertSame(['guide_entries' => 33, 'alternative_names' => 57], $result->data['totals']);
+        $this->assertSame(['guide_entries' => 33, 'alternative_names' => 58], $result->data['totals']);
         $this->assertSame('Read-only bundled defaults', $result->data['source']);
         $this->assertSame('sky-uk', $result->data['bundle_id']);
         $this->assertSame(['Utsav Plus'], array_column($result->data['entries'], 'alternative_names', 'guide_id')['705.uk']);
@@ -178,20 +179,96 @@ class BundledAliasesTest extends PluginFeatureTestCase
 
         EpgChannel::where('channel_id', '303.uk')->update(['name' => 'Unrelated Movies']);
         $result = $this->runGuideLinkAction('sync_playlist', $payload, $preview);
-        $this->assertFalse($result->success);
-        $this->assertStringContainsString('303.uk', $result->summary);
+        $this->assertTrue($result->success, $result->summary);
+        $this->assertTrue($context->run->logs()->where('message', 'like', 'Bundled alias identity changed%')->exists());
     }
 
-    public function test_wrong_channel_identity_aborts_before_channel_or_alias_writes(): void
+    public function test_wrong_bundled_identity_withholds_alias_and_preserves_affected_channel(): void
     {
         [$context, $playlist] = $this->prepare(false);
         EpgChannel::where('channel_id', '705.uk')->update(['name' => 'Unrelated News']);
+        $channel = Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $context->user->id, 'group_id' => null,
+            'title' => 'Utsav Plus', 'name' => 'Utsav Plus', 'title_custom' => null, 'name_custom' => null,
+            'stream_id' => '', 'stream_id_custom' => null, 'channel' => null, 'enabled' => true, 'is_vod' => false,
+        ]);
         $before = Channel::orderBy('id')->get()->toArray();
         $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
-        $this->assertFalse($result->success);
-        $this->assertStringContainsString('does not identify [Star Plus]', $result->summary);
+        $this->assertTrue($result->success, $result->summary);
+        $this->assertSame(1, $result->data['matching']['needs_review']);
+        $this->assertSame(0, $result->data['quarantine']['planned']);
+        $this->assertSame('queued', $result->data['native_settings']['epg_mapping']['status']);
         $this->assertSame($before, Channel::orderBy('id')->get()->toArray());
         $this->assertDatabaseCount(ProfileAliasResolver::ALIASES, 0);
+    }
+
+    public function test_spider_man_alias_updates_old_names_and_hands_channel_303_to_native_mapping(): void
+    {
+        [$context, $playlist] = $this->prepare(false);
+        EpgChannel::where('channel_id', '303.uk')->update(['name' => 'Spider-Man HD']);
+        $channels = [];
+        foreach ([true, false] as $previouslyMatched) {
+            $channels[] = Channel::factory()->createQuietly([
+                'playlist_id' => $playlist->id, 'user_id' => $context->user->id, 'group_id' => null,
+                'title' => 'UK: SKY CINEMA HITS ◉', 'name' => 'UK: SKY CINEMA HITS ◉',
+                'title_custom' => $previouslyMatched ? 'Sky Cinema The Mummy' : null,
+                'name_custom' => $previouslyMatched ? 'Sky Cinema The Mummy' : null,
+                'channel' => $previouslyMatched ? 303 : null,
+                'stream_id' => 'provider', 'stream_id_custom' => $previouslyMatched ? '303.uk' : null,
+                'enabled' => true, 'is_vod' => false, 'epg_channel_id' => null, 'epg_map_enabled' => true,
+            ]);
+        }
+        $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
+        $this->assertTrue($result->success, $result->summary);
+        $this->assertSame(0, $result->data['matching']['needs_review']);
+        foreach ($channels as $channel) {
+            $this->assertSame('Sky Cinema Spider-Man', $channel->refresh()->title_custom);
+            $this->assertEquals(303, $channel->channel);
+            $this->assertSame('303.uk', $channel->stream_id_custom);
+            $this->assertNull($channel->epg_channel_id);
+        }
+        $this->runNativeMap(EpgMap::sole());
+        $epgChannelId = EpgChannel::where('channel_id', '303.uk')->value('id');
+        foreach ($channels as $channel) {
+            $this->assertSame($epgChannelId, $channel->refresh()->epg_channel_id);
+        }
+    }
+
+    public function test_unlisted_seasonal_name_does_not_block_existing_ids_or_current_source_names(): void
+    {
+        [$context, $playlist] = $this->prepare(false);
+        $settings = json_decode(DB::table(ProfileRepository::PROFILES_TABLE)->first()->settings, true);
+        EpgChannel::where('channel_id', '303.uk')->update(['name' => 'Future Festival HD']);
+        Channel::where('playlist_id', $settings['source_playlist_id'])->where('channel', 303)
+            ->update(['title' => 'Sky Cinema Future Festival', 'name' => 'Sky Cinema Future Festival']);
+        $old = Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $context->user->id, 'group_id' => null,
+            'title' => 'UK: SKY CINEMA HITS', 'name' => 'UK: SKY CINEMA HITS',
+            'title_custom' => 'Sky Cinema The Mummy', 'name_custom' => 'Sky Cinema The Mummy',
+            'channel' => 303, 'stream_id_custom' => '303.uk', 'enabled' => true, 'is_vod' => false,
+            'epg_channel_id' => null, 'epg_map_enabled' => true,
+        ]);
+        $fresh = Channel::factory()->createQuietly([
+            'playlist_id' => $playlist->id, 'user_id' => $context->user->id, 'group_id' => null,
+            'title' => 'Sky Cinema Future Festival', 'name' => 'Sky Cinema Future Festival',
+            'title_custom' => null, 'name_custom' => null, 'channel' => null, 'stream_id_custom' => null,
+            'enabled' => true, 'is_vod' => false, 'epg_channel_id' => null, 'epg_map_enabled' => true,
+        ]);
+        $before = $old->refresh()->getAttributes();
+        $result = $this->runGuideLinkAction('apply_sync_playlist', ['playlist_id' => $playlist->id], $context);
+        $this->assertTrue($result->success, $result->summary);
+        $this->assertSame(1, $result->data['matching']['needs_review']);
+        $this->assertSame(0, $result->data['quarantine']['planned']);
+        $this->assertSame($before, $old->refresh()->getAttributes());
+        $this->assertSame('303.uk', $fresh->refresh()->stream_id_custom);
+        $this->assertNull(EpgMap::sole()->channels);
+        $this->assertNull($old->epg_channel_id);
+        $this->assertNull($fresh->epg_channel_id);
+        $this->assertSame('queued', $result->data['native_settings']['epg_mapping']['status']);
+        $this->runNativeMap(EpgMap::sole());
+        $epgChannelId = EpgChannel::where('channel_id', '303.uk')->value('id');
+        $this->assertSame($epgChannelId, $old->refresh()->epg_channel_id);
+        $this->assertSame($epgChannelId, $fresh->refresh()->epg_channel_id);
     }
 
     public function test_missing_target_warns_and_skips_without_installing_partial_defaults(): void
@@ -204,7 +281,7 @@ class BundledAliasesTest extends PluginFeatureTestCase
         $this->assertDatabaseCount(ProfileAliasResolver::ALIASES, 0);
     }
 
-    public function test_guide_formatting_and_declared_short_names_pass_but_timeshift_mismatch_fails(): void
+    public function test_guide_formatting_and_short_names_pass_but_timeshift_mismatch_withholds_alias(): void
     {
         [$context, $playlist] = $this->prepare(true);
         EpgChannel::where('channel_id', '705.uk')->update(['name' => 'Star Plus HD']);
@@ -214,8 +291,8 @@ class BundledAliasesTest extends PluginFeatureTestCase
         $this->assertTrue($result->success, $result->summary);
         EpgChannel::where('channel_id', '321.uk')->update(['name' => 'G! Mystery']);
         $result = $this->runGuideLinkAction('sync_playlist', ['playlist_id' => $playlist->id], $context);
-        $this->assertFalse($result->success);
-        $this->assertStringContainsString('321.uk', $result->summary);
+        $this->assertTrue($result->success, $result->summary);
+        $this->assertTrue($context->run->logs()->where('message', 'like', 'Bundled alias identity changed%')->exists());
     }
 
     public function test_alias_editor_only_offers_owned_custom_sets(): void

@@ -17,8 +17,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Tests\TestCase;
 
+require_once __DIR__.'/RunsNativeEpgMapping.php';
+
 abstract class PluginFeatureTestCase extends TestCase
 {
+    use RunsNativeEpgMapping;
+
     protected function setUp(): void
     {
         parent::setUp();

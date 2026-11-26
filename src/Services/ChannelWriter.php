@@ -20,7 +20,7 @@ class ChannelWriter
 {
     /**
      * @param  list<WritePlanRow>  $writePlan
-     * @return array{channels_written: int, channels_skipped: int, channels_failed: int, aborted: bool, written_ids: array<int, int>, errors: array<int, string>, unmanaged_channels_disabled: int}
+     * @return array{channels_written: int, channels_skipped: int, channels_failed: int, aborted: bool, errors: array<int, string>, unmanaged_channels_disabled: int}
      */
     public function apply(array $writePlan, PluginExecutionContext $context): array
     {
@@ -29,7 +29,6 @@ class ChannelWriter
             'channels_skipped' => 0,
             'channels_failed' => 0,
             'aborted' => false,
-            'written_ids' => [],
             'errors' => [],
             'unmanaged_channels_disabled' => 0,
         ];
@@ -120,16 +119,11 @@ class ChannelWriter
                     return $summary;
                 }
                 $summary['channels_'.$outcome]++;
-                if ($outcome === 'written') {
-                    $summary['written_ids'][] = (int) $row['channel_id'];
-                }
             } catch (\Throwable $exception) {
                 $summary['channels_failed']++;
                 $summary['errors'][] = $exception->getMessage();
             }
         }
-
-        $summary['written_ids'] = array_values(array_unique($summary['written_ids']));
 
         return $summary;
     }

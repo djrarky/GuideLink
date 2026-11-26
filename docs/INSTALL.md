@@ -18,6 +18,8 @@ playlist assignments, and custom aliases; fresh installations need initial setup
 
 - m3u-editor with the trusted-local plugin system enabled.
 - Host support for plugin-backed dynamic select options.
+- Native recurring EPG Maps with ID-first matching, `set_epg_icon`, and the
+  `SkipIfSyncReset` guard for superseded mapping jobs.
 - m3u-editor native recovery schema current enough for GuideLink's
   scrubber/failover integration:
   `channels.last_scrubber_live`,

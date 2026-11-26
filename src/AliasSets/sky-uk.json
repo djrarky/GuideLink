@@ -1,7 +1,7 @@
 {
     "id": "sky-uk",
     "name": "Sky UK channel aliases",
-    "revision": 3,
+    "revision": 4,
     "country": "uk",
     "entries": [
         {
@@ -138,7 +138,7 @@
         },
         {
             "target_stream_id": "303.uk",
-            "target_name": "Sky Cinema Halloween",
+            "target_name": "Sky Cinema Spider-Man",
             "aliases": [
                 "Sky Cinema Hits",
                 "Sky Cinema Halloween",
@@ -147,7 +147,8 @@
                 "Sky Cinema Batman",
                 "Sky Cinema Mad Max",
                 "Sky Cinema The Mummy",
-                "Sky Cinema Mission Impossible"
+                "Sky Cinema Mission Impossible",
+                "Sky Cinema Spider-Man"
             ],
             "guide_names": [
                 "Halloween HD",
@@ -155,7 +156,8 @@
                 "Sky Batman HD",
                 "Sky Mad Max HD",
                 "TheMummyHD",
-                "Sky M:I HD"
+                "Sky M:I HD",
+                "Spider-Man HD"
             ]
         },
         {

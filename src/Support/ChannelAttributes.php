@@ -22,7 +22,7 @@ use App\Models\Playlist;
  *     title_custom?: string|null, name_custom?: string|null,
  *     channel?: int|float|string|null, sort?: int|float|string|null,
  *     group_id?: int|string|null, stream_id_custom?: string|null,
- *     epg_channel_id?: int|string|null, logo_type?: string|null
+ *     logo_type?: string|null
  * }
  * @phpstan-type ChannelReportRow array{
  *     playlist_id: int, playlist_uuid: string, channel_id: int, channel_uuid: string|null,
@@ -46,7 +46,6 @@ class ChannelAttributes
         'sort_order' => 'sort',
         'group_id' => 'group_id',
         'stream_id' => 'stream_id_custom',
-        'epg_channel_id' => 'epg_channel_id',
         'logo_type' => 'logo_type',
     ];
 
@@ -85,7 +84,7 @@ class ChannelAttributes
             return (float) $left === (float) $right;
         }
 
-        if (in_array($field, ['group_id', 'user_id', 'epg_channel_id', 'is_vod'], true)
+        if (in_array($field, ['group_id', 'user_id', 'is_vod'], true)
             && is_numeric($left) && is_numeric($right)) {
             return (string) $left === (string) $right;
         }

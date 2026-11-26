@@ -1,7 +1,7 @@
 {
   "id": "guidelink",
   "name": "GuideLink",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "api_version": "1.0.0",
   "description": "Keeps canonical IPTV channels aligned, reports availability, and guards scrubber/failover continuity.",
   "entrypoint": "Plugin.php",
@@ -685,7 +685,7 @@
                   "epg": "Programme guide logos",
                   "channel": "Stream provider logos"
                 },
-                "helper_text": "Choose the logo preference for matched channels, including disabled backups. Custom logo overrides are kept; missing guide logos fall back to provider logos."
+                "helper_text": "Programme guide logos enables Set preferred icon to EPG on the managed EPG map, including disabled backups. Stream provider logos resets matched channels to provider logos. Custom overrides are kept; missing guide logos fall back to provider logos."
               },
               {
                 "id": "settings.playlist_layout_managed",

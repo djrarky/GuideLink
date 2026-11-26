@@ -11,6 +11,7 @@ use App\Jobs\ProcessM3uImportComplete;
 use App\Models\Channel;
 use App\Models\ChannelFailover;
 use App\Models\EpgChannel;
+use App\Models\EpgMap;
 use App\Models\Group;
 use App\Models\Job;
 use App\Models\Playlist;
@@ -556,16 +557,23 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $backup = $this->channel($playlist, ['enabled' => false, 'logo' => 'https://example.test/custom.png']);
         $epg = EpgChannel::where('channel_id', 'bbc.one')->firstOrFail();
         $epg->forceFill(['icon' => 'https://example.test/epg.png', 'icon_custom' => null])->saveQuietly();
-        $this->sync($this->previewContext($context), $playlist);
+        $preview = $this->sync($this->previewContext($context), $playlist);
         $this->assertSame(ChannelLogoType::Channel, $channel->refresh()->logo_type);
         $row = DB::table(RunResultRepository::TABLE)->where('channel_id', $channel->id)->value('details');
-        $this->assertSame('epg', json_decode($row, true)['write_plan']['native_changes']['logo_type']);
+        $this->assertArrayNotHasKey('logo_type', json_decode($row, true)['write_plan']['native_changes']);
+        $this->assertArrayNotHasKey('epg_channel_id', json_decode($row, true)['write_plan']['native_changes']);
+        $this->assertTrue($preview->data['native_settings']['epg_mapping']['details']['desired']['settings']['set_epg_icon']);
 
         $this->sync($context, $playlist);
+        $this->assertTrue(EpgMap::sole()->settings['set_epg_icon']);
+        $this->assertSame(ChannelLogoType::Channel, $channel->refresh()->logo_type);
+        $this->assertSame(ChannelLogoType::Channel, $backup->refresh()->logo_type);
+        $this->assertFalse($backup->enabled);
+        $this->assertNull($channel->epg_channel_id);
+        $this->runNativeMap(EpgMap::sole());
         $this->assertSame(ChannelLogoType::Epg, $channel->refresh()->logo_type);
         $this->assertSame(ChannelLogoType::Epg, $backup->refresh()->logo_type);
-        $this->assertFalse($backup->enabled);
-        $this->assertSame('https://example.test/epg.png', LogoService::getChannelLogoUrl($channel));
+        $this->assertSame('https://example.test/epg.png', LogoService::getChannelLogoUrl($channel->fresh()));
         $this->assertSame('https://example.test/custom.png', LogoService::getChannelLogoUrl($backup));
         $this->assertSame(0, $this->sync($context, $playlist)->data['writes']['channels_written']);
         $epg->forceFill(['icon' => null])->saveQuietly();
@@ -573,7 +581,36 @@ class SyncStabilityTest extends PluginFeatureTestCase
 
         $this->settings(['logo_source' => 'channel']);
         $this->sync($context, $playlist);
+        $this->assertFalse(EpgMap::sole()->settings['set_epg_icon']);
+        $this->runNativeMap(EpgMap::sole());
         $this->assertSame(ChannelLogoType::Channel, $channel->refresh()->logo_type);
+        $this->assertSame(ChannelLogoType::Channel, $backup->refresh()->logo_type);
+        $this->assertSame('https://example.test/custom.png', LogoService::getChannelLogoUrl($backup));
+    }
+
+    public function test_native_mapping_repairs_epg_logo_preference_without_metadata_changes_and_keep_preserves_it(): void
+    {
+        [$context, $playlist] = $this->configured(['logo_source' => 'epg']);
+        $channel = $this->channel($playlist);
+        $this->sync($context, $playlist);
+        $this->runNativeMap(EpgMap::sole());
+        $this->assertSame(ChannelLogoType::Epg, $channel->refresh()->logo_type);
+
+        $channel->forceFill(['logo_type' => 'channel'])->saveQuietly();
+        $result = $this->sync($context, $playlist);
+        $this->assertSame(0, $result->data['writes']['channels_written']);
+        $this->assertSame('queued', $result->data['native_settings']['epg_mapping']['status']);
+        $this->assertSame([], $result->data['native_settings']['epg_mapping']['details']['changes']);
+        $this->assertSame(ChannelLogoType::Channel, $channel->refresh()->logo_type);
+        $this->runNativeMap(EpgMap::sole());
+        $this->assertSame(ChannelLogoType::Epg, $channel->refresh()->logo_type);
+        $this->assertSame('queued', $this->sync($context, $playlist)->data['native_settings']['epg_mapping']['status']);
+
+        $this->settings(['logo_source' => 'preserve']);
+        $this->sync($context, $playlist);
+        $this->assertFalse(EpgMap::sole()->settings['set_epg_icon']);
+        $this->runNativeMap(EpgMap::sole());
+        $this->assertSame(ChannelLogoType::Epg, $channel->refresh()->logo_type);
     }
 
     public function test_existing_logo_preferences_and_quarantine_are_unchanged_by_default(): void
@@ -583,6 +620,8 @@ class SyncStabilityTest extends PluginFeatureTestCase
         $unmatched = $this->channel($playlist, ['title' => 'Zebra Boutique', 'name' => 'Zebra Boutique']);
         $review = $this->channel($playlist, ['title' => 'BBC One +1', 'name' => 'BBC One +1']);
         $this->sync($context, $playlist);
+        $this->assertFalse(EpgMap::sole()->settings['set_epg_icon']);
+        $this->runNativeMap(EpgMap::sole());
         $this->assertSame(ChannelLogoType::Epg, $channel->refresh()->logo_type);
         $this->assertTrue($unmatched->refresh()->enabled);
         $this->assertTrue((bool) $unmatched->can_merge);

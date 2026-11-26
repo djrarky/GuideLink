@@ -10,6 +10,7 @@ and keeps their names, numbers, and groups aligned with provider listings.
 - Report failures, cache fallback and recovery through m3u-editor's native notifications and alert channels, with persistent duplicate suppression.
 - Preview matches and channel changes before applying them.
 - Reject ambiguous source data and stale write plans; retain partial results when a run is cancelled or fails.
+- Configure recurring native EPG Maps after matching names to the numbered lineup; m3u-editor maintains EPG associations and programme-guide logo preferences.
 - Choose EPG or provider logos while retaining custom logo overrides.
 - Keep managed groups stable through imports and optionally disable channels and provider groups without confirmed matches.
 - Check channel availability and failover coverage.

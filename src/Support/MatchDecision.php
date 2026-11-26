@@ -12,7 +12,7 @@ final class MatchDecision
     /** @param array<string, mixed> $row */
     public static function isPreserved(array $row): bool
     {
-        return in_array($row['exclusion_reason'] ?? '', ['group_preserved', 'title_preserved'], true);
+        return in_array($row['exclusion_reason'] ?? '', ['group_preserved', 'title_preserved', 'alias_unverified'], true);
     }
 
     /** @param array<string, mixed> $row */

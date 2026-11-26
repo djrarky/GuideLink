@@ -219,8 +219,9 @@ class ProfileAliasesTest extends PluginFeatureTestCase
         ));
         $this->assertArrayHasKey('bbc.one', $options);
         DB::table(ProfileAliasResolver::ALIASES)->whereJsonContains('alias_set_ids', (string) $first)->update(['enabled' => false]);
-        $this->assertSame([], $resolver->enabledAliases($first, $context));
-        $this->assertSame([], $resolver->enabledAliases($second, $context));
+        $this->assertSame([$entry], $resolver->apply([$entry], [
+            'guide_epg_id' => $guide, 'alias_set_ids' => [$first, $second],
+        ], $context));
     }
 
     public function test_selected_alias_sets_use_two_queries_and_observe_edits_between_playlists(): void

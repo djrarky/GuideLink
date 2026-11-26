@@ -121,7 +121,7 @@ across those sets’ reference guides. Bundled sets are excluded from this picke
 
 ### Read-only bundled defaults
 
-The Sky UK dataset contains 44 alternative names against 30 guide entries,
+The Sky UK dataset contains 58 alternative names against 33 guide entries,
 including explicit +1 services. Alias Sets stores the dataset reference; profiles
 store their selected set IDs. The entries themselves come directly from
 `src/AliasSets/sky-uk.json`. They do not appear in the editable **Aliases** table.
@@ -145,9 +145,11 @@ Alias Set row, so this preview uses its supported action menu.
 ### Matching rules for sets
 
 At runtime, each target guide ID must resolve uniquely in the profile’s source and
-guide. Bundled targets must match the expected channel name or a verified spelling
-from the JSON, allowing normal formatting differences but no fuzzy approval of
-identity. Custom sets reused with a different guide must share a normalized target
+guide. A bundled alias is used only when its target matches the expected channel
+name or a verified spelling from the JSON. A changed name withholds that alias
+and logs a warning; it does not stop current source matching or native EPG setup.
+Unresolved channels affected by that alias retain their metadata, enabled state,
+and failover relationships for review. Custom sets reused with a different guide must share a normalized target
 name across both guides. Number-only guide labels cannot establish identity.
 The set’s country must match the profile’s country.
 
@@ -377,7 +379,7 @@ its own current region summary table.
 | Channels to leave unchanged — name patterns | empty | Leave channels with matching titles unchanged during GuideLink matching and cleanup. Enter one regular expression per tag. |
 | Use lineup groups | `true` | Move matched channels into the lineup's groups and maintain their group order. When off, GuideLink leaves group assignments and group setup unchanged. |
 | Disable channels without a confirmed match | `false` | When you run Run Sync, or a scheduled sync applies changes, disable unconfirmed channels, including review suggestions and excluded channels. Exceptions below are kept. With Use lineup groups on, also disable eligible provider groups left empty or containing only channels disabled by this policy. Turning this off does not re-enable channels or groups. |
-| Channel logos | Keep each channel's preference | Choose the logo preference for matched channels, including disabled backups. Custom logo overrides are kept; missing guide logos fall back to provider logos. |
+| Channel logos | Keep each channel's preference | Programme guide logos enables **Set preferred icon to EPG** on the managed EPG map, including disabled backups. Stream provider logos resets matched channels to provider logos. Custom logo overrides are kept; missing guide logos fall back to provider logos. |
 
 The disabling policy also blocks native auto-merge from re-enabling unconfirmed
 channels. It runs only after successful metadata writes; failure or cancellation
@@ -642,10 +644,41 @@ Decorative playlist headings such as `#### SPORTS ####` are excluded generically
 Fuzzy matching preserves distinguishing numbers and plus
 suffixes. Channels missing from both the source and selected numbered guide
 cannot be made valid matches by lowering thresholds. Their metadata stays unchanged;
-the optional quarantine policy disables every channel without a confirmed match.
-Accepted sync matches set both the custom stream ID and the native EPG-channel
-association to the selected Guide EPG record. Preview shows both changes without
-writing them; unresolved matches retain their existing EPG associations.
+the optional quarantine policy disables unconfirmed channels except preserved
+channels and unresolved channels affected by a withheld bundled alias.
+
+EPG association follows two stages. GuideLink matches the playlist name to the
+source, assigns its channel number, and saves the selected numbered guide's ID
+in `stream_id_custom` (for example, `303.uk`). After successful metadata and
+channel-policy writes, GuideLink configures a recurring native **EPG Map** and
+queues m3u-editor's mapper. The native mapper prioritizes that ID over names and
+writes the EPG association. GuideLink does not write `epg_channel_id` itself.
+
+**Programme guide logos** sets the map's **Set preferred icon to EPG** option.
+The native mapper applies that preference when it links each channel. **Keep each
+channel's preference** turns the option off and retains existing choices.
+**Stream provider logos** also turns it off and resets confirmed channels to the
+provider preference during metadata sync, because turning off the native option
+alone does not reset a previously selected EPG preference. Custom logo overrides
+and the native fallback to provider logos are retained in all modes.
+
+The managed map covers the whole playlist, with **Overwrite** and **Recurring**
+on, **Skip channels without EPG ID** off, and **Prioritize name/display name
+matching** off. Native mapping uses saved custom or provider IDs first, with the
+host's name matching as fallback. It does not compare playlist channel numbers
+directly: GuideLink supplies the corresponding XMLTV IDs during lineup sync.
+The host excludes VOD and channels with native EPG mapping disabled. GuideLink's
+lineup matching exceptions do not restrict this separate native operation.
+Other user-created maps and additional native matching options are preserved.
+
+Preview reports the map settings and scope without creating or running a map.
+Run Sync reports **queued** or **processing**, not EPG completion; use native
+**EPG Maps** for mapping progress and errors. Recurrence reruns the native mapper
+after EPG refresh, including channels imported since the last GuideLink sync.
+Every successful Run Sync also queues native mapping, even when metadata and map
+settings are unchanged. GuideLink does not inspect or repair individual EPG links
+or logo preferences. A busy native map must finish before its settings can change;
+an unchanged active map is reported as processing without another dispatch.
 
 Saved results explain unresolved matches, including conflicting names, numbered
 services, timeshifts, and missing guide entries. The defaults below are conservative
@@ -665,8 +698,9 @@ Halloween/Bourne/Batman/Mad Max/The Mummy/Mission Impossible cinema names,
 Nick Alvinnn!!!/Nick SpongeBob, and New Vision TV/ARY World, based on Sky's
 [October](https://helpforum.sky.com/t5/What-s-On/Changes-to-the-TV-Guide-October-2026/td-p/5379297)
 and [November announcements](https://helpforum.sky.com/t5/What-s-On/Changes-to-the-TV-Guide-November-2026/m-p/5411427).
-These explicit aliases still validate the guide's named target; a channel number
-alone does not establish service continuity.
+These explicit aliases still validate the guide's named target before renaming
+channels. A number alone does not establish a new name match; maintaining an
+existing numbered guide association is a separate native EPG operation.
 There is no permanent Superheroes-to-Greats rewrite: seasonal labels have occupied
 different cinema services. A provider retaining such a label needs a matching
 source/guide alias or independent feed evidence. Bloomberg EU uses the generic

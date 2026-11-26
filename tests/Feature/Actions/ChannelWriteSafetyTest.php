@@ -85,7 +85,6 @@ class ChannelWriteSafetyTest extends PluginFeatureTestCase
 
         $this->assertSame(0, $again['channels_written']);
         $this->assertSame(1, $again['channels_skipped']);
-        $this->assertSame([], $again['written_ids']);
         Event::assertNotDispatched('eloquent.saving: '.Channel::class);
         $this->assertSame('BBC One', $channel->refresh()->title_custom);
     }

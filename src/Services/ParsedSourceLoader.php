@@ -21,7 +21,7 @@ use AppLocalPlugins\GuideLink\Support\ProfileDefaults;
  * @phpstan-type SourceEntry array{
  *     number: int, name: string, category: string, aliases: array<int, string>,
  *     stream_id?: string, guide_valid?: bool, guide_only?: bool,
- *     profile_aliases?: array<string, array<int, string>>
+ *     profile_aliases?: array<string, array<int, string>>, withheld_aliases?: list<string>
  * }
  * @phpstan-type PreparedSourceEntry SourceEntry&array{stream_id: string, guide_valid: bool}
  */
@@ -51,53 +51,54 @@ class ParsedSourceLoader
     {
         $sourceMode = strtolower(Options::string($payload, [], 'source_mode', ProfileDefaults::SOURCE_MODE_SCRAPER_CACHE));
         if ($sourceMode === ProfileDefaults::SOURCE_MODE_NATIVE_PLAYLIST) {
-            return $this->profileAliases->apply($this->withGuideAliases($this->nativePlaylistEntries($payload, $context, $guideMap), $guideAliases, $payload), $payload, $context);
-        }
-
-        if ($sourceMode !== ProfileDefaults::SOURCE_MODE_SCRAPER_CACHE) {
+            $sourceEntries = $this->nativePlaylistEntries($payload, $context);
+            $sourceDetails = ['source_playlist_id' => (int) $payload['source_playlist_id']];
+        } elseif ($sourceMode === ProfileDefaults::SOURCE_MODE_SCRAPER_CACHE) {
+            $cache = $sourceSnapshot ?? $this->cache->readLastGood($this->cache->config($payload, []));
+            $sourceEntries = $cache['entries'];
+            $sourceDetails = ['source_cache_path' => $cache['path']];
+            $context->info('Loaded canonical source from last-good scraper cache.', [
+                ...$sourceDetails,
+                'source_total' => count($sourceEntries),
+                'source_fetched_at' => $cache['metadata']['fetched_at'] ?? null,
+            ]);
+        } else {
             throw new \RuntimeException("Unsupported source mode [{$sourceMode}].");
         }
 
-        $cache = $sourceSnapshot ?? $this->cache->readLastGood($this->cache->config($payload, []));
         $entries = [];
         $missingGuide = 0;
 
-        foreach ($cache['entries'] as $entry) {
-            if (! is_array($entry) || ! isset($entry['number'], $entry['name'], $entry['category'])) {
-                continue;
-            }
-
-            $number = (int) $entry['number'];
+        // Both readers supply validated canonical rows. Enrich them once here;
+        // cache validation already rejects malformed data instead of dropping it.
+        foreach ($sourceEntries as $entry) {
+            $number = $entry['number'];
             $guideValid = isset($guideMap[$number]);
             $missingGuide += $guideValid ? 0 : 1;
 
             $entries[] = [
                 'number' => $number,
-                'name' => (string) $entry['name'],
-                'category' => (string) $entry['category'],
-                'aliases' => array_values(array_map(
-                    fn (mixed $alias): string => (string) $alias,
-                    is_array($entry['aliases'] ?? null) ? $entry['aliases'] : [],
-                )),
+                'name' => $entry['name'],
+                'category' => $entry['category'],
+                'aliases' => array_values($entry['aliases']),
                 'stream_id' => $guideMap[$number] ?? (string) ($entry['stream_id'] ?? ''),
                 'guide_valid' => $guideValid,
             ];
         }
 
         if ($missingGuide > 0) {
-            $context->warning('Cached source rows are missing guide numbers.', [
+            $context->warning('Source rows are missing guide numbers.', [
                 'missing_guide_numbers' => $missingGuide,
-                'source_cache_path' => $cache['path'],
+                ...$sourceDetails,
             ]);
         }
 
-        $context->info('Loaded canonical source from last-good scraper cache.', [
-            'source_cache_path' => $cache['path'],
-            'source_total' => count($entries),
-            'source_fetched_at' => $cache['metadata']['fetched_at'] ?? null,
-        ]);
+        // A native source playlist defines its own lineup. Only website sources
+        // are supplemented with services found exclusively in the guide.
+        $guideOnlyMap = $sourceMode === ProfileDefaults::SOURCE_MODE_SCRAPER_CACHE ? $guideMap : [];
+        $entries = $this->withGuideAliases($entries, $guideAliases, $payload, $guideOnlyMap);
 
-        return $this->profileAliases->apply($this->withGuideAliases($entries, $guideAliases, $payload, $guideMap), $payload, $context);
+        return $this->profileAliases->apply($entries, $payload, $context);
     }
 
     /**
@@ -107,9 +108,10 @@ class ParsedSourceLoader
      * @param  list<PreparedSourceEntry>  $entries
      * @param  array<int, array<int, string>>  $guideAliases
      * @param  array<string, mixed>  $payload
+     * @param  array<int, string>  $guideOnlyMap  Empty when the source must define the whole lineup.
      * @return list<PreparedSourceEntry>
      */
-    private function withGuideAliases(array $entries, array $guideAliases, array $payload, array $guideMap = []): array
+    private function withGuideAliases(array $entries, array $guideAliases, array $payload, array $guideOnlyMap): array
     {
         if ($guideAliases === []) {
             return $entries;
@@ -117,7 +119,7 @@ class ParsedSourceLoader
 
         $countries = $this->countryRules;
         $rules = $countries->resolve($payload, []);
-        $inputs = [$entries, $guideAliases, $rules, $guideMap];
+        $inputs = [$entries, $guideAliases, $rules, $guideOnlyMap];
         if ($this->guideAliasInputs === $inputs) {
             return $this->guideAliasEntries;
         }
@@ -149,7 +151,7 @@ class ParsedSourceLoader
 
         unset($entry);
         foreach ($guideAliases as $number => $names) {
-            if (isset($sourceNumbers[$number]) || ! isset($guideMap[$number]) || $names === []) {
+            if (isset($sourceNumbers[$number]) || ! isset($guideOnlyMap[$number]) || $names === []) {
                 continue;
             }
             foreach ($names as $name) {
@@ -159,7 +161,7 @@ class ParsedSourceLoader
             }
             $entries[] = [
                 'number' => $number, 'name' => $names[0], 'category' => 'Other',
-                'aliases' => $names, 'stream_id' => $guideMap[$number],
+                'aliases' => $names, 'stream_id' => $guideOnlyMap[$number],
                 'guide_valid' => true, 'guide_only' => true,
             ];
         }
@@ -171,10 +173,9 @@ class ParsedSourceLoader
 
     /**
      * @param  array<string, mixed>  $payload
-     * @param  array<int, string>  $guideMap
-     * @return list<PreparedSourceEntry>
+     * @return list<SourceEntry>
      */
-    private function nativePlaylistEntries(array $payload, PluginExecutionContext $context, array $guideMap): array
+    private function nativePlaylistEntries(array $payload, PluginExecutionContext $context): array
     {
         $sourcePlaylistId = Options::nullableInt($payload['source_playlist_id'] ?? null);
         if ($sourcePlaylistId === null) {
@@ -201,7 +202,6 @@ class ParsedSourceLoader
         $entries = [];
         $duplicateNumbers = 0;
         $missingNumbers = 0;
-        $missingGuide = 0;
 
         foreach ($channels as $channel) {
             $number = Options::nullableInt($channel->channel);
@@ -223,16 +223,12 @@ class ParsedSourceLoader
                 continue;
             }
 
-            $guideValid = isset($guideMap[$number]);
-            $missingGuide += $guideValid ? 0 : 1;
-
             $entries[$number] = [
                 'number' => $number,
                 'name' => ChannelAttributes::title($channel),
                 'category' => ChannelAttributes::groupName($channel),
                 'aliases' => $this->aliases($channel),
-                'stream_id' => $guideMap[$number] ?? ChannelAttributes::streamId($channel),
-                'guide_valid' => $guideValid,
+                'stream_id' => ChannelAttributes::streamId($channel),
             ];
         }
 
@@ -241,13 +237,6 @@ class ParsedSourceLoader
                 'source_playlist_id' => (int) $playlist->id,
                 'missing_channel_numbers' => $missingNumbers,
                 'duplicate_channel_numbers' => $duplicateNumbers,
-            ]);
-        }
-
-        if ($missingGuide > 0) {
-            $context->warning('Native source rows are missing guide numbers.', [
-                'missing_guide_numbers' => $missingGuide,
-                'source_playlist_id' => (int) $playlist->id,
             ]);
         }
 

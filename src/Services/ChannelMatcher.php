@@ -41,9 +41,7 @@ use Illuminate\Database\Eloquent\Collection;
  *     tier: int|'', score: int, matched_on: string, source_number: int|'',
  *     source_name: string, source_category: string, source_stream_id: string,
  *     candidate_summary: string, review_reason: string,
- *     alias_sets: array<int, string>, exclusion_reason: '',
- *     _group_id: int|null, _sort: int|float|string|null,
- *     _epg_channel_id: int|string|null, _logo_type: string|null,
+ *     alias_sets: array<int, string>, exclusion_reason: ''|'alias_unverified',
  *     _native_originals: NativeMetadata, _decision_state: DecisionState
  * }
  */
@@ -133,11 +131,7 @@ class ChannelMatcher
                 'candidate_summary' => $this->candidateSummary($result['candidates'] ?? []),
                 'review_reason' => $result['review_reason'] ?? '',
                 'alias_sets' => $result['alias_sets'] ?? [],
-                'exclusion_reason' => '',
-                '_group_id' => $channel->group_id,
-                '_sort' => $channel->sort,
-                '_epg_channel_id' => $channel->epg_channel_id,
-                '_logo_type' => $channel->logo_type instanceof \BackedEnum ? $channel->logo_type->value : $channel->logo_type,
+                'exclusion_reason' => $result['exclusion_reason'] ?? '',
                 '_native_originals' => ChannelAttributes::nativeMetadata($channel),
                 '_decision_state' => ChannelAttributes::decisionState($channel),
             ];
@@ -169,6 +163,8 @@ class ChannelMatcher
         $index = [
             'rules' => $rules,
             'by_stream_id' => [],
+            'withheld_aliases' => [],
+            'withheld_stream_ids' => [],
             'by_name' => [],
             'by_alias' => [],
             'by_profile_alias' => [],
@@ -189,6 +185,10 @@ class ChannelMatcher
         $guideEntries = [];
 
         foreach ($sourceEntries as $source) {
+            foreach ($source['withheld_aliases'] ?? [] as $alias) {
+                $index['withheld_aliases'][$this->countryRules->lookupKey($alias, $rules)] = true;
+                $index['withheld_stream_ids'][$source['stream_id']] = true;
+            }
             if ($source['guide_only'] ?? false) {
                 $source['guide_only'] = false;
                 $guideEntries[] = $source;
@@ -279,6 +279,18 @@ class ChannelMatcher
             if ($aliasShift !== $sourceShift) {
                 $result['decision'] = 'needs_review';
                 $result['review_reason'] = 'Alias changes a timeshift identity.';
+            }
+        }
+
+        if (! MatchDecision::isConfirmed($result['decision'])) {
+            $withheld = isset($sourceIndex['withheld_stream_ids'][ChannelAttributes::streamId($channel)]);
+            foreach ([...array_column($names, 'raw'), (string) $channel->title, (string) $channel->name] as $name) {
+                $withheld = $withheld || isset($sourceIndex['withheld_aliases'][$this->countryRules->lookupKey($name, $rules)]);
+            }
+            if ($withheld) {
+                $result['decision'] = 'needs_review';
+                $result['exclusion_reason'] = 'alias_unverified';
+                $result['review_reason'] = 'A bundled alias could not be verified against the current guide. Channel metadata and enabled state are preserved pending review. '.($result['review_reason'] ?? '');
             }
         }
 

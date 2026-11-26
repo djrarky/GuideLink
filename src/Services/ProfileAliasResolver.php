@@ -74,12 +74,6 @@ final class ProfileAliasResolver
         });
     }
 
-    /** Load enabled custom aliases; bundled sets read their JSON directly. */
-    public function enabledAliases(int $setId, PluginExecutionContext $context): array
-    {
-        return (new AliasSetRepository)->rows($setId, $context, enabledOnly: true);
-    }
-
     /**
      * Missing targets are reported separately; invalid or conflicting mappings fail.
      *
@@ -149,7 +143,7 @@ final class ProfileAliasResolver
     }
 
     /** Read each required guide once per playlist, before reusing any alias preparation. */
-    private function validateGuides(array $sets, array $entries, array $payload, PluginExecutionContext $context, BundledAliasService $bundles): void
+    private function validateGuides(array &$sets, array &$entries, array $payload, PluginExecutionContext $context, BundledAliasService $bundles): void
     {
         $guideId = (int) ($payload['guide_epg_id'] ?? 0);
         $available = array_fill_keys(array_column(array_filter($entries, fn (array $entry): bool => $entry['guide_valid']), 'stream_id'), true);
@@ -179,11 +173,31 @@ final class ProfileAliasResolver
         }
         $rules = $this->countryRules->resolve($payload, []);
         $identities = [];
-        foreach ($sets as $set) {
+        foreach ($sets as &$set) {
             if ($set['bundle_id']) {
-                // Missing entries retain the ordinary warning/skip behavior below.
-                $present = array_values(array_filter($set['aliases'], fn (array $row): bool => array_key_exists($row['target_stream_id'], $names[$guideId])));
-                $bundles->validateTargets($present, $names[$guideId], $payload);
+                // A stale optional alias is not a failure of the numbered guide.
+                // Withhold it, preserving affected unresolved channels for review.
+                foreach ($set['aliases'] as $index => $row) {
+                    if (! array_key_exists($row['target_stream_id'], $names[$guideId])) {
+                        continue;
+                    }
+                    try {
+                        $bundles->validateTargets([$row], $names[$guideId], $payload);
+                    } catch (\RuntimeException $exception) {
+                        unset($set['aliases'][$index]);
+                        foreach ($entries as &$entry) {
+                            if (($entry['stream_id'] ?? '') === $row['target_stream_id']) {
+                                $entry['withheld_aliases'] = [...($entry['withheld_aliases'] ?? []), ...$row['aliases']];
+                            }
+                        }
+                        unset($entry);
+                        $context->warning('Bundled alias identity changed; these aliases were withheld. Current source matching and native EPG mapping remain available.', [
+                            'set_id' => $set['id'], 'target_stream_id' => $row['target_stream_id'],
+                            'aliases' => $row['aliases'], 'reason' => $exception->getMessage(),
+                        ]);
+                    }
+                }
+                $set['aliases'] = array_values($set['aliases']);
 
                 continue;
             }

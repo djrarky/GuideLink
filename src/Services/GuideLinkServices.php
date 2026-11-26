@@ -102,6 +102,11 @@ class GuideLinkServices
         return new PlaylistSetupService;
     }
 
+    public function epgMappingSetup(): EpgMappingSetupService
+    {
+        return new EpgMappingSetupService;
+    }
+
     public function profileRepository(): ProfileRepository
     {
         return new ProfileRepository;

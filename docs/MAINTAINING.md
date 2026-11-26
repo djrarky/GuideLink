@@ -40,6 +40,7 @@ action's `GuideLinkServices` factory throughout the batch.
 | Apply native settings | `PlaylistSetupService`, `AutoMergeSetupService`, `ScrubberSetupService` | Apply profile configuration and save its audit records. Sync does not start a scan. |
 | Apply channel policy | `GroupSyncService`, `ChannelWriter`, `ChannelQuarantineService` | Ensure destination groups exist, update metadata, then quarantine unconfirmed channels. |
 | Recover matches | `MatchedChannelRecoveryService`, `MatchedChannelMerge` | Restore merge eligibility, select primaries and rebuild native failovers for confirmed matches; then disable eligible provider groups. |
+| Hand off EPG mapping | `EpgMappingSetupService` | Configure the playlist-wide recurring native map and dispatch `MapPlaylistChannelsToEpg` after successful channel policy writes. Native jobs own channel selection, matching, association and completion. |
 | Report | `WritePlanBuilder::summary`, `RunResultRepository` | Persist decisions and plans, and return counts, errors and cancellation status. |
 
 Preview follows preparation and planning, previews native settings and saves
@@ -59,6 +60,20 @@ Keep these ordering constraints visible when editing the action:
   must succeed before provider-group cleanup.
 - Provider-group cleanup rechecks current membership in the update query, so a
   newly imported or unquarantined channel prevents its group being disabled.
+- EPG handoff only receives playlist/guide identity and the logo preference.
+  It does not read channel rows, match decisions or write plans. Null channel
+  and group scopes deliberately select the whole playlist, including later
+  imports. Every successful sync dispatches the native mapper unless that map
+  is already processing. The host owns eligibility, matching and repair.
+- Native mapping also owns the EPG logo preference via `settings.set_epg_icon`.
+  Metadata planning has no EPG association fields and only resets `logo_type`
+  for an explicit provider-logo choice. Native `set_epg_icon=false` preserves
+  existing preferences, so it cannot perform that reset.
+- A stale bundled alias is withheld with a warning. Affected unresolved channels
+  are preserved from quarantine, recovery and provider-group cleanup. Existing
+  custom or provider IDs enter native mapping independently of alias sets.
+  Custom alias conflicts and
+  ambiguous guide IDs remain fatal validation errors.
 
 For matching changes, start at `ChannelMatcher::match` and `matchName`. The
 ordered stages are policy: fingerprint evidence, exact/explicit aliases and
@@ -85,6 +100,7 @@ whole playlist or batch.
 | Quarantine | One transaction per channel, including the ownership record and backup-link cleanup | Recorded merge policy, channel flags and removal of incoming/outgoing failover links commit or roll back together. Release restores merge eligibility without enabling the channel. |
 | Matched-channel recovery | One transaction for the selected playlist's confirmed matches and their native merge | Merge eligibility, primary flags and failover relationships roll back together on failure or cancellation. Earlier metadata/quarantine changes remain. |
 | Provider-group disablement | One transaction per batch of up to 250 groups | Completed batches remain; changed or ineligible groups are reported as failures. |
+| Native EPG setup | One transaction under the playlist lock, followed by native job dispatch | Metadata remains committed if setup or dispatch fails. A subsequent sync queues native mapping again. Completion and association failures are tracked by the native EPG map. |
 | Run results | One transaction per `RunResultRepository::replace` call, inserting buffers of 250 rows | A replacement rolls back as a unit. When called inside native-settings application, it also depends on the outer transaction. |
 
 Channel plans carry two before-states: identity/scope evidence and raw metadata
@@ -146,11 +162,20 @@ cells often use `''`, while absent match results use `null`.
 | `MetadataView`, `WritePlanRow` | [WritePlanBuilder](../src/Services/WritePlanBuilder.php) | Display-level before/after values, native column changes and their expected raw originals. |
 | `FailoverSummary` | [ChannelRepository](../src/Services/ChannelRepository.php) | Deduplicated valid backups; summary maps are keyed by the primary channel ID. |
 
-`native_columns` describes the intended native metadata state;
 `native_changes` contains only fields to write; `native_originals` contains the
 raw before-values for those fields. `decision_state` separately protects the
 identity and scope evidence that justified the change. Preserve that distinction
-when adding a metadata field.
+when adding a metadata field. The report's `desired` view already describes the
+intended state; there is no second `native_columns` copy. Match rows read sort,
+group ID and logo preference from the raw metadata snapshot rather than carrying
+separate copies of those fields.
+
+Both source readers return canonical rows to one preparation path in
+`ParsedSourceLoader`, which adds guide IDs and validates number coverage before
+applying aliases. Cache structure validation belongs to `SourceCacheService`;
+the loader does not silently discard malformed cached rows. Metadata planning
+uses `ChannelAttributes::NATIVE_METADATA_FIELDS` for both report differences and
+native updates. EPG association columns are absent from that field list.
 
 ## Cache Ownership And Lifetime
 
@@ -177,6 +202,12 @@ reads. Do not key it only by profile ID, playlist ID or `updated_at`. The
 between calls, including changes that leave timestamps unchanged.
 
 ## Choosing Where To Make A Change
+
+Human readability is the primary design criterion. Prefer descriptive names,
+explicit control flow and clear service responsibilities over a smaller line
+count. Keep shared rules in one place, but avoid generic abstractions that make
+a sync harder to follow. Comments should explain policy and host behaviour,
+especially transaction boundaries and why a field is preserved.
 
 - **Profile options:** start with `plugin.json`, `ProfileDefaults` and
   `ProfileSettings` (or `SourceSettings` for source options). Update configuration

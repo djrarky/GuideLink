@@ -11,8 +11,7 @@ use AppLocalPlugins\GuideLink\Support\MatchDecision;
 /**
  * Translate confirmed matches into proposed metadata differences, without writes.
  * NativeMetadata uses database column names; MetadataView uses report labels.
- * native_columns is the intended state, native_changes is only changed fields,
- * and native_originals is the raw before-state for those changed fields.
+ * native_changes contains changed fields and native_originals their raw before-state.
  * A missing_group requires group creation and replanning before ChannelWriter.
  *
  * @phpstan-import-type SourceEntry from ParsedSourceLoader
@@ -24,13 +23,13 @@ use AppLocalPlugins\GuideLink\Support\MatchDecision;
  * @phpstan-type MetadataView array{
  *     title: string, name: string, stream_id: string,
  *     channel_number: int|float|string, sort_order: int|float|string|null,
- *     group_id: int|null, group: string, epg_channel_id: int|string|null, logo_type: string|null
+ *     group_id: int|null, group: string, logo_type: string|null
  * }
  * @phpstan-type WritePlanRow array{
  *     playlist_id: int, channel_id: int, channel_uuid: string|null,
  *     decision: string, tier: int|'', score: int,
  *     current: MetadataView, desired: MetadataView,
- *     native_columns: NativeMetadata, native_changes: NativeMetadata,
+ *     native_changes: NativeMetadata,
  *     native_originals: NativeMetadata, decision_state: DecisionState,
  *     changes: array<string, array{from: mixed, to: mixed}>, missing_group: string|null
  * }
@@ -40,11 +39,10 @@ class WritePlanBuilder
     /**
      * @param  list<MatchRow>  $matchRows
      * @param  array<string, Group>  $groupsByName
-     * @param  array<int, int>  $guideChannelIds
      * @param  array<string, true>  $preservedGroupKeys
      * @return list<WritePlanRow>
      */
-    public function rows(array $matchRows, array $groupsByName, array $guideChannelIds = [], string $logoSource = 'preserve', array $preservedGroupKeys = []): array
+    public function rows(array $matchRows, array $groupsByName, string $logoSource = 'preserve', array $preservedGroupKeys = []): array
     {
         $rows = [];
 
@@ -57,7 +55,6 @@ class WritePlanBuilder
                 continue;
             }
 
-            $changes = [];
             $desiredNumber = (int) $matchRow['source_number'];
             $desiredName = (string) $matchRow['source_name'];
             $desiredCategory = (string) $matchRow['source_category'];
@@ -65,63 +62,49 @@ class WritePlanBuilder
             $preserveGroup = $groupKey === '' || isset($preservedGroupKeys[$groupKey]);
             $desiredStreamId = (string) ($matchRow['source_stream_id'] ?? '');
             $desiredGroup = $groupsByName[$groupKey] ?? null;
-            $writeLogo = $logoSource === 'channel' || ($logoSource === 'epg' && isset($guideChannelIds[$desiredNumber]));
+            $originals = $matchRow['_native_originals'];
             $current = [
                 'title' => $matchRow['title'],
                 'name' => $matchRow['name'],
                 'stream_id' => $matchRow['stream_id'],
                 'channel_number' => $matchRow['channel_number'],
-                'sort_order' => $matchRow['_sort'],
-                'group_id' => $matchRow['_group_id'],
+                'sort_order' => $originals['sort'] ?? null,
+                'group_id' => isset($originals['group_id']) ? (int) $originals['group_id'] : null,
                 'group' => $matchRow['group'],
-                'epg_channel_id' => $matchRow['_epg_channel_id'] ?? null,
-                'logo_type' => $matchRow['_logo_type'] ?? null,
+                'logo_type' => $originals['logo_type'] ?? null,
             ];
             $desired = [
                 'title' => $desiredName,
                 'name' => $desiredName,
-                'stream_id' => $desiredStreamId,
+                'stream_id' => $desiredStreamId !== '' ? $desiredStreamId : $current['stream_id'],
                 'channel_number' => $desiredNumber,
                 'sort_order' => $desiredNumber,
                 'group_id' => $preserveGroup ? $current['group_id'] : $desiredGroup?->id,
                 'group' => $preserveGroup ? $current['group'] : $desiredCategory,
-                'epg_channel_id' => $guideChannelIds[$desiredNumber] ?? $current['epg_channel_id'],
-                'logo_type' => $writeLogo ? $logoSource : $current['logo_type'],
+                // The native map sets EPG preference; only an explicit provider
+                // reset belongs in the metadata plan.
+                'logo_type' => $logoSource === 'channel' ? 'channel' : $current['logo_type'],
             ];
 
-            foreach (['title', 'name', 'channel_number', 'sort_order'] as $field) {
-                $this->fieldChange($changes, $field, $current[$field], $desired[$field]);
-            }
-            if ($desiredStreamId !== '') {
-                $this->fieldChange($changes, 'stream_id', $current['stream_id'], $desired['stream_id']);
-            }
-            if (isset($guideChannelIds[$desiredNumber])) {
-                $this->fieldChange($changes, 'epg_channel_id', $current['epg_channel_id'], $desired['epg_channel_id']);
-            }
-            if ($desiredGroup) {
-                $this->fieldChange($changes, 'group_id', $current['group_id'], $desired['group_id']);
-            }
-            if ($writeLogo) {
-                $this->fieldChange($changes, 'logo_type', $current['logo_type'], $desired['logo_type']);
+            $changes = [];
+            $nativeChanges = [];
+            foreach (ChannelAttributes::NATIVE_METADATA_FIELDS as $field => $column) {
+                if ($field === 'group_id' && ! $desiredGroup) {
+                    // Preserve the existing group until a destination exists.
+                    // Sync creates missing groups and then rebuilds the plan.
+                    continue;
+                }
+                if ($this->sameDisplayValue($field, $current[$field], $desired[$field])) {
+                    continue;
+                }
+
+                $changes[$field] = ['from' => $current[$field], 'to' => $desired[$field]];
+                $nativeChanges[$column] = $desired[$field];
             }
 
             $missingGroup = $desiredGroup || $preserveGroup ? null : $desiredCategory;
             if ($changes === [] && $missingGroup === null) {
                 continue;
-            }
-
-            $nativeColumns = [];
-            foreach (ChannelAttributes::NATIVE_METADATA_FIELDS as $field => $column) {
-                if (($field === 'stream_id' && $desiredStreamId === '')
-                    || ($field === 'epg_channel_id' && ! isset($guideChannelIds[$desiredNumber]))
-                    || ($field === 'logo_type' && ! $writeLogo)) {
-                    continue;
-                }
-                $nativeColumns[$column] = $desired[$field];
-            }
-            $nativeChanges = [];
-            foreach ($changes as $field => $change) {
-                $nativeChanges[ChannelAttributes::NATIVE_METADATA_FIELDS[$field]] = $change['to'];
             }
 
             $rows[] = [
@@ -133,9 +116,8 @@ class WritePlanBuilder
                 'score' => (int) $matchRow['score'],
                 'current' => $current,
                 'desired' => $desired,
-                'native_columns' => $nativeColumns,
                 'native_changes' => $nativeChanges,
-                'native_originals' => array_intersect_key($matchRow['_native_originals'] ?? [], $nativeChanges),
+                'native_originals' => array_intersect_key($originals, $nativeChanges),
                 'decision_state' => $matchRow['_decision_state'] ?? [],
                 'changes' => $changes,
                 'missing_group' => $missingGroup,
@@ -239,22 +221,13 @@ class WritePlanBuilder
         ];
     }
 
-    /**
-     * @param  array<string, array{from: mixed, to: mixed}>  $changes
-     */
-    private function fieldChange(array &$changes, string $field, mixed $current, mixed $desired): void
+    /** Compare report values; locked writes separately check raw database values. */
+    private function sameDisplayValue(string $field, mixed $current, mixed $desired): bool
     {
         if (in_array($field, ['channel_number', 'sort_order'], true) && is_numeric($current) && is_numeric($desired)) {
-            if ((float) $current === (float) $desired) {
-                return;
-            }
-        } elseif ((string) $current === (string) $desired) {
-            return;
+            return (float) $current === (float) $desired;
         }
 
-        $changes[$field] = [
-            'from' => $current,
-            'to' => $desired,
-        ];
+        return (string) $current === (string) $desired;
     }
 }
