@@ -2,7 +2,7 @@ name: Publish verified GuideLink v0.1.8
 
 on:
   push:
-    tags: ['publish-guidelink-v0.1.8-retry3']
+    tags: ['publish-guidelink-v0.1.8-retry4']
 
 permissions:
   contents: read
@@ -54,13 +54,15 @@ jobs:
           print('Exact release commit, successful CI, authored notes and three draft assets verified.')
           PY
 
-      - name: Verify assets against the tested archive and tagged source
+      - name: Verify packaged files against the tested installation and tagged source
         run: |
           python3 - <<'PYASSETS'
           import json
           import os
           import subprocess
+          import sys
           from pathlib import Path
+          sys.excepthook = lambda kind, value, tb: print(f'::error::{kind.__name__}: {value}', file=sys.stderr)
           temp = Path(os.environ['RUNNER_TEMP'])
           release = json.loads((temp / 'release-before.json').read_text())
           destination = temp / 'publish-assets'
@@ -74,15 +76,24 @@ jobs:
           python3 scripts/package-release.py --output "$RUNNER_TEMP/rebuilt-assets"
           python3 - <<'PY'
           import hashlib
+          import json
           import os
+          import sys
+          import zipfile
           from pathlib import Path
+          sys.excepthook = lambda kind, value, tb: print(f'::error::{kind.__name__}: {value}', file=sys.stderr)
           temp = Path(os.environ['RUNNER_TEMP'])
           downloaded = temp / 'publish-assets'
           rebuilt = temp / 'rebuilt-assets'
           for name in ['guidelink.zip', 'SHA256SUMS', 'release.json']:
               assert (downloaded / name).read_bytes() == (rebuilt / name).read_bytes(), f'Asset mismatch: {name}'
-          assert hashlib.sha256((downloaded / 'guidelink.zip').read_bytes()).hexdigest() == 'c7405c734926f5c10f44a16c3970eb13c5d89e2118faadb8d2b736004e592a4f', 'Archive differs from the tested live installation'
-          print('All assets match the tagged source; ZIP matches the tested live installation.')
+          assert hashlib.sha256((downloaded / 'release.json').read_bytes()).hexdigest() == '3f872250bcae75e3a92aeec286bfafd172c4725d399c426f833baeb54a41df09', 'File inventory differs from the tested live installation'
+          inventory = json.loads((downloaded / 'release.json').read_text())['files']
+          with zipfile.ZipFile(downloaded / 'guidelink.zip') as archive:
+              assert len(archive.namelist()) == len(inventory), 'Unexpected ZIP entries'
+              actual = {name.removeprefix('guidelink/'): hashlib.sha256(archive.read(name)).hexdigest() for name in archive.namelist()}
+          assert actual == inventory, 'Packaged file hashes differ from the tested live installation'
+          print('All assets match the tagged source; every packaged file matches the tested live installation.')
           PY
 
       - name: Publish the verified draft
