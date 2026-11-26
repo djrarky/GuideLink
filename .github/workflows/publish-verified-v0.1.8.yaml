@@ -1,0 +1,99 @@
+name: Publish verified GuideLink v0.1.8
+
+on:
+  push:
+    tags: ['publish-guidelink-v0.1.8']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: v0.1.8
+      RELEASE_COMMIT: 74db3bd685091baf95d1bbfb199601fd49aafc68
+    steps:
+      - name: Checkout the tested release
+        uses: actions/checkout@v4
+        with:
+          ref: v0.1.8
+          fetch-depth: 0
+
+      - name: Verify tag, validation, notes and draft
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yaml/runs?head_sha=$RELEASE_COMMIT&per_page=100" > "$RUNNER_TEMP/release-runs.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release-before.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          runs = json.loads((temp / 'release-runs.json').read_text())['workflow_runs']
+          assert any(r['head_sha'] == os.environ['RELEASE_COMMIT'] and r['head_branch'] == os.environ['RELEASE_TAG'] and r['event'] == 'push' and r['status'] == 'completed' and r['conclusion'] == 'success' for r in runs), 'Release validation has not passed'
+          release = json.loads((temp / 'release-before.json').read_text())
+          assert release['tag_name'] == os.environ['RELEASE_TAG']
+          assert release['name'] == 'GuideLink v0.1.8'
+          assert release['draft'] and not release['prerelease']
+          assert release['body'].strip() == Path('.github/release-notes/v0.1.8.md').read_text().strip()
+          assert sorted(a['name'] for a in release['assets']) == ['SHA256SUMS', 'guidelink.zip', 'release.json']
+          assert all(a['state'] == 'uploaded' and a['size'] > 0 for a in release['assets'])
+          print('Exact release commit, successful CI, authored notes and three draft assets verified.')
+          PY
+
+      - name: Verify assets against the tested archive and tagged source
+        run: |
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/publish-assets" --pattern guidelink.zip --pattern SHA256SUMS --pattern release.json
+          python3 scripts/package-release.py --output "$RUNNER_TEMP/rebuilt-assets"
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          downloaded = temp / 'publish-assets'
+          rebuilt = temp / 'rebuilt-assets'
+          for name in ['guidelink.zip', 'SHA256SUMS', 'release.json']:
+              assert (downloaded / name).read_bytes() == (rebuilt / name).read_bytes(), f'Asset mismatch: {name}'
+          assert hashlib.sha256((downloaded / 'guidelink.zip').read_bytes()).hexdigest() == 'c7405c734926f5c10f44a16c3970eb13c5d89e2118faadb8d2b736004e592a4f', 'Archive differs from the tested live installation'
+          print('All assets match the tagged source; ZIP matches the tested live installation.')
+          PY
+
+      - name: Publish the verified draft
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((temp / 'release-before.json').read_text())
+          (temp / 'publish.json').write_text(json.dumps({'draft': False, 'tag_name': os.environ['RELEASE_TAG'], 'make_latest': 'true'}))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f"RELEASE_ID={release['id']}\n")
+          PY
+
+      - name: Complete and verify publication
+        run: |
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --input "$RUNNER_TEMP/publish.json" > "$RUNNER_TEMP/release-after.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          before = json.loads((temp / 'release-before.json').read_text())
+          after = json.loads((temp / 'release-after.json').read_text())
+          assert not after['draft'] and after['published_at'] and after['tag_name'] == os.environ['RELEASE_TAG']
+          for key in ['id', 'name', 'target_commitish', 'prerelease', 'body']:
+              assert after[key] == before[key], f'Unexpected metadata change: {key}'
+          def assets(release):
+              return sorted((a['id'], a['name'], a['size'], a.get('digest')) for a in release['assets'])
+          assert assets(after) == assets(before), 'Release assets changed'
+          print(after['html_url'])
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f"Published [{after['name']}]({after['html_url']}) after verifying release CI, notes, source and tested archive.\n")
+          PY
