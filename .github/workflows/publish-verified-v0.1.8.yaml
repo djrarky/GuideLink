@@ -2,7 +2,7 @@ name: Publish verified GuideLink v0.1.8
 
 on:
   push:
-    tags: ['publish-guidelink-v0.1.8']
+    tags: ['publish-guidelink-v0.1.8-retry1']
 
 permissions:
   contents: read
@@ -27,23 +27,26 @@ jobs:
 
       - name: Verify tag, validation, notes and draft
         run: |
+          trap 'echo "::error::Publication verification failed at shell line $LINENO"' ERR
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
           gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yaml/runs?head_sha=$RELEASE_COMMIT&per_page=100" > "$RUNNER_TEMP/release-runs.json"
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release-before.json"
           python3 - <<'PY'
           import json
+          import sys
+          sys.excepthook = lambda kind, value, tb: print(f'::error::{kind.__name__}: {value}', file=sys.stderr)
           import os
           from pathlib import Path
           temp = Path(os.environ['RUNNER_TEMP'])
           runs = json.loads((temp / 'release-runs.json').read_text())['workflow_runs']
           assert any(r['head_sha'] == os.environ['RELEASE_COMMIT'] and r['head_branch'] == os.environ['RELEASE_TAG'] and r['event'] == 'push' and r['status'] == 'completed' and r['conclusion'] == 'success' for r in runs), 'Release validation has not passed'
           release = json.loads((temp / 'release-before.json').read_text())
-          assert release['tag_name'] == os.environ['RELEASE_TAG']
-          assert release['name'] == 'GuideLink v0.1.8'
-          assert release['draft'] and not release['prerelease']
-          assert release['body'].strip() == Path('.github/release-notes/v0.1.8.md').read_text().strip()
-          assert sorted(a['name'] for a in release['assets']) == ['SHA256SUMS', 'guidelink.zip', 'release.json']
-          assert all(a['state'] == 'uploaded' and a['size'] > 0 for a in release['assets'])
+          assert release['tag_name'] == os.environ['RELEASE_TAG'], f"Unexpected tag: {release['tag_name']}"
+          assert release['name'] == 'GuideLink v0.1.8', f"Unexpected release name: {release['name']}"
+          assert release['draft'] and not release['prerelease'], f"Unexpected release state: draft={release['draft']}, prerelease={release['prerelease']}"
+          assert release['body'].strip() == Path('.github/release-notes/v0.1.8.md').read_text().strip(), 'Draft notes differ from tagged notes'
+          assert sorted(a['name'] for a in release['assets']) == ['SHA256SUMS', 'guidelink.zip', 'release.json'], f"Unexpected assets: {[a['name'] for a in release['assets']]}"
+          assert all(a['state'] == 'uploaded' and a['size'] > 0 for a in release['assets']), 'Assets are incomplete'
           print('Exact release commit, successful CI, authored notes and three draft assets verified.')
           PY
 
@@ -68,6 +71,8 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
+          import sys
+          sys.excepthook = lambda kind, value, tb: print(f'::error::{kind.__name__}: {value}', file=sys.stderr)
           import os
           from pathlib import Path
           temp = Path(os.environ['RUNNER_TEMP'])
@@ -82,6 +87,8 @@ jobs:
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --input "$RUNNER_TEMP/publish.json" > "$RUNNER_TEMP/release-after.json"
           python3 - <<'PY'
           import json
+          import sys
+          sys.excepthook = lambda kind, value, tb: print(f'::error::{kind.__name__}: {value}', file=sys.stderr)
           import os
           from pathlib import Path
           temp = Path(os.environ['RUNNER_TEMP'])
