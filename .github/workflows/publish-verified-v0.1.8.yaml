@@ -2,7 +2,7 @@ name: Publish verified GuideLink v0.1.8
 
 on:
   push:
-    tags: ['publish-guidelink-v0.1.8-retry2']
+    tags: ['publish-guidelink-v0.1.8-retry3']
 
 permissions:
   contents: read
@@ -56,7 +56,21 @@ jobs:
 
       - name: Verify assets against the tested archive and tagged source
         run: |
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/publish-assets" --pattern guidelink.zip --pattern SHA256SUMS --pattern release.json
+          python3 - <<'PYASSETS'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((temp / 'release-before.json').read_text())
+          destination = temp / 'publish-assets'
+          destination.mkdir()
+          for asset in release['assets']:
+              with (destination / asset['name']).open('wb') as output:
+                  subprocess.run(['gh', 'api', '-H', 'Accept: application/octet-stream',
+                      f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/assets/{asset['id']}"],
+                      stdout=output, check=True)
+          PYASSETS
           python3 scripts/package-release.py --output "$RUNNER_TEMP/rebuilt-assets"
           python3 - <<'PY'
           import hashlib
